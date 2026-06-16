@@ -41,13 +41,14 @@ export class SchemaValidator {
       if (data === undefined) {
         return;
       }
-      this.addError(path, `Value is null but schema is not nullable`);
+      const schemaType = 'type' in schema ? schema.type : 'any non-null';
+      this.addError(path, `Value is null but schema is not nullable`, schemaType, null);
       return;
     }
 
     if ('enum' in schema && schema.enum && schema.enum.length > 0) {
       if (!schema.enum.includes(data)) {
-        this.addError(path, `Value "${data}" is not in enum [${schema.enum.join(', ')}]`);
+        this.addError(path, `Value "${data}" is not in enum [${schema.enum.join(', ')}]`, schema.enum, data);
         return;
       }
     }
@@ -66,7 +67,7 @@ export class SchemaValidator {
         return result.valid;
       });
       if (!anyValid) {
-        this.addError(path, `Value does not match any of the "anyOf" schemas`);
+        this.addError(path, `Value does not match any of the "anyOf" schemas`, schema.anyOf.map((s) => this.getSchemaDesc(s)), data);
       }
       return;
     }
@@ -79,9 +80,9 @@ export class SchemaValidator {
       }).length;
 
       if (validCount === 0) {
-        this.addError(path, `Value does not match any of the "oneOf" schemas`);
+        this.addError(path, `Value does not match any of the "oneOf" schemas`, schema.oneOf.map((s) => this.getSchemaDesc(s)), data);
       } else if (validCount > 1) {
-        this.addError(path, `Value matches ${validCount} of the "oneOf" schemas, expected exactly one`);
+        this.addError(path, `Value matches ${validCount} of the "oneOf" schemas, expected exactly one`, 'exactly 1 match', `${validCount} matches`);
       }
       return;
     }
@@ -91,6 +92,12 @@ export class SchemaValidator {
     if (type) {
       this.validateType(data, type, schema, path);
     }
+  }
+
+  private getSchemaDesc(schema: SchemaObject): string {
+    const type = 'type' in schema ? schema.type : 'object';
+    if ('enum' in schema && schema.enum) return `enum[${schema.enum.join(', ')}]`;
+    return String(type);
   }
 
   private validateType(data: any, type: string, schema: SchemaObject, path: string): void {
@@ -123,7 +130,7 @@ export class SchemaValidator {
 
   private validateObject(data: any, schema: ObjectSchema, path: string): void {
     if (typeof data !== 'object' || data === null || Array.isArray(data)) {
-      this.addError(path, `Expected object but got ${this.getDataType(data)}`);
+      this.addError(path, `Expected object but got ${this.getDataType(data)}`, 'object', this.getDataType(data));
       return;
     }
 
@@ -132,7 +139,9 @@ export class SchemaValidator {
 
     for (const propName of required) {
       if (!(propName in data) || data[propName] === undefined) {
-        this.addError(`${path}.${propName}`, `Required property "${propName}" is missing`);
+        const propSchema = properties[propName];
+        const expected = propSchema ? this.getSchemaDesc(propSchema) : 'defined value';
+        this.addError(`${path}.${propName}`, `Required property "${propName}" is missing`, expected, data[propName]);
       }
     }
 
@@ -145,14 +154,14 @@ export class SchemaValidator {
     if (schema.minProperties !== undefined) {
       const propCount = Object.keys(data).length;
       if (propCount < schema.minProperties) {
-        this.addError(path, `Object has ${propCount} properties, minimum is ${schema.minProperties}`);
+        this.addError(path, `Object has ${propCount} properties, minimum is ${schema.minProperties}`, `>= ${schema.minProperties}`, propCount);
       }
     }
 
     if (schema.maxProperties !== undefined) {
       const propCount = Object.keys(data).length;
       if (propCount > schema.maxProperties) {
-        this.addError(path, `Object has ${propCount} properties, maximum is ${schema.maxProperties}`);
+        this.addError(path, `Object has ${propCount} properties, maximum is ${schema.maxProperties}`, `<= ${schema.maxProperties}`, propCount);
       }
     }
 
@@ -160,7 +169,7 @@ export class SchemaValidator {
       const knownProps = new Set(Object.keys(properties));
       for (const propName of Object.keys(data)) {
         if (!knownProps.has(propName)) {
-          this.addError(`${path}.${propName}`, `Additional property "${propName}" is not allowed`);
+          this.addError(`${path}.${propName}`, `Additional property "${propName}" is not allowed`, 'not allowed', data[propName]);
         }
       }
     } else if (schema.additionalProperties && typeof schema.additionalProperties === 'object') {
@@ -175,16 +184,16 @@ export class SchemaValidator {
 
   private validateArray(data: any, schema: ArraySchema, path: string): void {
     if (!Array.isArray(data)) {
-      this.addError(path, `Expected array but got ${this.getDataType(data)}`);
+      this.addError(path, `Expected array but got ${this.getDataType(data)}`, 'array', this.getDataType(data));
       return;
     }
 
     if (schema.minItems !== undefined && data.length < schema.minItems) {
-      this.addError(path, `Array has ${data.length} items, minimum is ${schema.minItems}`);
+      this.addError(path, `Array has ${data.length} items, minimum is ${schema.minItems}`, `>= ${schema.minItems}`, data.length);
     }
 
     if (schema.maxItems !== undefined && data.length > schema.maxItems) {
-      this.addError(path, `Array has ${data.length} items, maximum is ${schema.maxItems}`);
+      this.addError(path, `Array has ${data.length} items, maximum is ${schema.maxItems}`, `<= ${schema.maxItems}`, data.length);
     }
 
     if (schema.uniqueItems) {
@@ -192,7 +201,7 @@ export class SchemaValidator {
       for (let i = 0; i < data.length; i++) {
         const key = JSON.stringify(data[i]);
         if (seen.has(key)) {
-          this.addError(`${path}[${i}]`, `Duplicate item in array`);
+          this.addError(`${path}[${i}]`, `Duplicate item in array`, 'unique value', data[i]);
           break;
         }
         seen.add(key);
@@ -208,26 +217,26 @@ export class SchemaValidator {
 
   private validateString(data: any, schema: StringSchema, path: string): void {
     if (typeof data !== 'string') {
-      this.addError(path, `Expected string but got ${this.getDataType(data)}`);
+      this.addError(path, `Expected string but got ${this.getDataType(data)}`, 'string', this.getDataType(data));
       return;
     }
 
     if (schema.minLength !== undefined && data.length < schema.minLength) {
-      this.addError(path, `String length is ${data.length}, minimum is ${schema.minLength}`);
+      this.addError(path, `String length is ${data.length}, minimum is ${schema.minLength}`, `>= ${schema.minLength} chars`, data.length);
     }
 
     if (schema.maxLength !== undefined && data.length > schema.maxLength) {
-      this.addError(path, `String length is ${data.length}, maximum is ${schema.maxLength}`);
+      this.addError(path, `String length is ${data.length}, maximum is ${schema.maxLength}`, `<= ${schema.maxLength} chars`, data.length);
     }
 
     if (schema.pattern) {
       try {
         const regex = new RegExp(schema.pattern);
         if (!regex.test(data)) {
-          this.addError(path, `String "${data}" does not match pattern "${schema.pattern}"`);
+          this.addError(path, `String "${data}" does not match pattern "${schema.pattern}"`, `pattern: ${schema.pattern}`, data);
         }
       } catch (e) {
-        this.addError(path, `Invalid regex pattern: ${schema.pattern}`);
+        this.addError(path, `Invalid regex pattern: ${schema.pattern}`, 'valid regex', schema.pattern);
       }
     }
 
@@ -241,27 +250,27 @@ export class SchemaValidator {
       case 'email': {
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
         if (!emailRegex.test(value)) {
-          this.addError(path, `"${value}" is not a valid email`);
+          this.addError(path, `"${value}" is not a valid email`, 'email format', value);
         }
         break;
       }
       case 'date': {
         const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
         if (!dateRegex.test(value) || isNaN(Date.parse(value))) {
-          this.addError(path, `"${value}" is not a valid date (expected YYYY-MM-DD)`);
+          this.addError(path, `"${value}" is not a valid date (expected YYYY-MM-DD)`, 'YYYY-MM-DD', value);
         }
         break;
       }
       case 'date-time': {
         if (isNaN(Date.parse(value))) {
-          this.addError(path, `"${value}" is not a valid date-time`);
+          this.addError(path, `"${value}" is not a valid date-time`, 'ISO 8601 date-time', value);
         }
         break;
       }
       case 'uuid': {
         const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
         if (!uuidRegex.test(value)) {
-          this.addError(path, `"${value}" is not a valid UUID`);
+          this.addError(path, `"${value}" is not a valid UUID`, 'UUID format', value);
         }
         break;
       }
@@ -270,14 +279,14 @@ export class SchemaValidator {
         try {
           new URL(value);
         } catch {
-          this.addError(path, `"${value}" is not a valid URI`);
+          this.addError(path, `"${value}" is not a valid URI`, 'URI/URL format', value);
         }
         break;
       }
       case 'ipv4': {
         const ipv4Regex = /^(\d{1,3}\.){3}\d{1,3}$/;
         if (!ipv4Regex.test(value)) {
-          this.addError(path, `"${value}" is not a valid IPv4 address`);
+          this.addError(path, `"${value}" is not a valid IPv4 address`, 'IPv4 format', value);
         }
         break;
       }
@@ -288,63 +297,63 @@ export class SchemaValidator {
 
   private validateNumber(data: any, schema: NumberSchema, path: string): void {
     if (typeof data !== 'number' || Number.isNaN(data)) {
-      this.addError(path, `Expected number but got ${this.getDataType(data)}`);
+      this.addError(path, `Expected number but got ${this.getDataType(data)}`, 'number', this.getDataType(data));
       return;
     }
 
     if (schema.minimum !== undefined && data < schema.minimum) {
-      this.addError(path, `Value ${data} is less than minimum ${schema.minimum}`);
+      this.addError(path, `Value ${data} is less than minimum ${schema.minimum}`, `>= ${schema.minimum}`, data);
     }
 
     if (schema.maximum !== undefined && data > schema.maximum) {
-      this.addError(path, `Value ${data} is greater than maximum ${schema.maximum}`);
+      this.addError(path, `Value ${data} is greater than maximum ${schema.maximum}`, `<= ${schema.maximum}`, data);
     }
 
     if (schema.exclusiveMinimum !== undefined && data <= schema.exclusiveMinimum) {
-      this.addError(path, `Value ${data} must be greater than exclusive minimum ${schema.exclusiveMinimum}`);
+      this.addError(path, `Value ${data} must be greater than exclusive minimum ${schema.exclusiveMinimum}`, `> ${schema.exclusiveMinimum}`, data);
     }
 
     if (schema.exclusiveMaximum !== undefined && data >= schema.exclusiveMaximum) {
-      this.addError(path, `Value ${data} must be less than exclusive maximum ${schema.exclusiveMaximum}`);
+      this.addError(path, `Value ${data} must be less than exclusive maximum ${schema.exclusiveMaximum}`, `< ${schema.exclusiveMaximum}`, data);
     }
 
     if (schema.multipleOf !== undefined && schema.multipleOf !== 0) {
       if (data % schema.multipleOf !== 0) {
-        this.addError(path, `Value ${data} is not a multiple of ${schema.multipleOf}`);
+        this.addError(path, `Value ${data} is not a multiple of ${schema.multipleOf}`, `multiple of ${schema.multipleOf}`, data);
       }
     }
   }
 
   private validateInteger(data: any, schema: IntegerSchema, path: string): void {
     if (typeof data !== 'number' || !Number.isInteger(data) || Number.isNaN(data)) {
-      this.addError(path, `Expected integer but got ${this.getDataType(data)}`);
+      this.addError(path, `Expected integer but got ${this.getDataType(data)}`, 'integer', this.getDataType(data));
       return;
     }
 
     if (schema.minimum !== undefined && data < schema.minimum) {
-      this.addError(path, `Value ${data} is less than minimum ${schema.minimum}`);
+      this.addError(path, `Value ${data} is less than minimum ${schema.minimum}`, `>= ${schema.minimum}`, data);
     }
 
     if (schema.maximum !== undefined && data > schema.maximum) {
-      this.addError(path, `Value ${data} is greater than maximum ${schema.maximum}`);
+      this.addError(path, `Value ${data} is greater than maximum ${schema.maximum}`, `<= ${schema.maximum}`, data);
     }
 
     if (schema.multipleOf !== undefined && schema.multipleOf !== 0) {
       if (data % schema.multipleOf !== 0) {
-        this.addError(path, `Value ${data} is not a multiple of ${schema.multipleOf}`);
+        this.addError(path, `Value ${data} is not a multiple of ${schema.multipleOf}`, `multiple of ${schema.multipleOf}`, data);
       }
     }
   }
 
   private validateBoolean(data: any, schema: BooleanSchema, path: string): void {
     if (typeof data !== 'boolean') {
-      this.addError(path, `Expected boolean but got ${this.getDataType(data)}`);
+      this.addError(path, `Expected boolean but got ${this.getDataType(data)}`, 'boolean', this.getDataType(data));
     }
   }
 
   private validateNull(data: any, schema: NullSchema, path: string): void {
     if (data !== null) {
-      this.addError(path, `Expected null but got ${this.getDataType(data)}`);
+      this.addError(path, `Expected null but got ${this.getDataType(data)}`, 'null', this.getDataType(data));
     }
   }
 

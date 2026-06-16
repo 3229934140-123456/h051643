@@ -64,7 +64,12 @@ export class ContractValidator {
         method,
         valid: false,
         requestErrors: [],
-        responseErrors: [{ path: '$', message: `Endpoint not found in spec: ${method} ${path}` }],
+        responseErrors: [{
+          path: '$',
+          message: `Endpoint not found in spec: ${method} ${path}`,
+          expected: 'defined endpoint in OpenAPI spec',
+          actual: `${method} ${path}`,
+        }],
         statusCodeMatched: false,
         contentTypeMatched: false,
       };
@@ -136,9 +141,12 @@ export class ContractValidator {
       const paramValue = this.getParameterValue(param, request);
 
       if (param.required && (paramValue === undefined || paramValue === null)) {
+        const expected = param.schema ? this.getParamExpectedDesc(param.schema) : 'non-null value';
         errors.push({
           path: `request.${param.in}.${param.name}`,
           message: `Required parameter "${param.name}" is missing`,
+          expected,
+          actual: paramValue === null ? 'null' : 'undefined',
         });
         continue;
       }
@@ -157,6 +165,12 @@ export class ContractValidator {
     }
 
     return errors;
+  }
+
+  private getParamExpectedDesc(schema: SchemaObject): string {
+    if ('enum' in schema && schema.enum) return `enum[${schema.enum.join(', ')}]`;
+    if ('type' in schema && schema.type) return String(schema.type);
+    return 'defined value';
   }
 
   private getParameterValue(param: ParameterObject, request: MockRequest): any {
@@ -226,9 +240,14 @@ export class ContractValidator {
     if (!endpoint.requestBody) return errors;
 
     if (endpoint.requestBody.required && (body === undefined || body === null)) {
+      const expected = endpoint.requestBody.content?.['application/json']?.schema
+        ? this.getParamExpectedDesc(endpoint.requestBody.content['application/json'].schema as SchemaObject)
+        : 'non-null request body';
       errors.push({
         path: 'request.body',
         message: 'Required request body is missing',
+        expected,
+        actual: body === null ? 'null' : 'undefined',
       });
       return errors;
     }

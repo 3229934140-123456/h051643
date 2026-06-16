@@ -24,6 +24,10 @@ export {
   ErrorCategory,
   FailedCaseFilter,
   RealStatusCodeGroupStats,
+  FailureCategory,
+  AttributionItem,
+  AttributionSummary,
+  SummaryStats,
 } from './test-report';
 export {
   LiveContractTester,
@@ -36,5 +40,16 @@ export {
   TestSuiteFile,
   CIJsonOutput,
 } from './live-tester';
+export {
+  CIHistoryManager,
+  createCIHistoryManager,
+  formatTrendAsText,
+  formatFailureDiffAsText,
+  CIHistoryContext,
+  CIHistoryRecord,
+  TrendPoint,
+  FailureDiffResult,
+  HistoryQueryOptions,
+} from './ci-history';
 
 export * from './types';

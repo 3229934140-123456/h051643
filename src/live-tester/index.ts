@@ -25,6 +25,8 @@ export interface ContractTestCase {
   pathParams?: { [key: string]: string };
   skip?: boolean;
   timeoutMs?: number;
+  retries?: number;
+  slowThresholdMs?: number;
   tags?: string[];
 }
 
@@ -34,16 +36,30 @@ export interface LiveTestConfig {
   timeoutMs?: number;
   validateRequest?: boolean;
   validateResponse?: boolean;
+  retries?: number;
+  retryDelayMs?: number;
+  slowThresholdMs?: number;
+  retryOnStatusCodes?: number[];
 }
 
 export interface LiveTestResult {
   report: TestReport;
   results: TestCaseResult[];
+  slowEndpoints: Array<{
+    endpoint: string;
+    method: string;
+    durationMs: number;
+    thresholdMs: number;
+    requestUrl: string;
+  }>;
+  recoveredAfterRetry: TestCaseResult[];
   rawResponses: Array<{
     testCase: ContractTestCase;
     request: MockRequest;
     response: MockResponse;
     validation: ContractTestResult;
+    retryCount: number;
+    isSlowEndpoint: boolean;
   }>;
 }
 
@@ -58,6 +74,9 @@ export interface TestSuiteFile {
   baseUrl?: string;
   defaultHeaders?: { [key: string]: string };
   timeoutMs?: number;
+  retries?: number;
+  retryDelayMs?: number;
+  slowThresholdMs?: number;
   env?: { [key: string]: string };
   testCases: ContractTestCase[];
 }
@@ -67,10 +86,19 @@ export interface CIJsonOutput {
   timestamp: string;
   baseUrl: string;
   specPath?: string;
+  effectiveConfig: {
+    baseUrl: string;
+    defaultHeaders: { [key: string]: string };
+    timeoutMs: number;
+    retries: number;
+    slowThresholdMs: number;
+  };
   summary: {
     total: number;
     passed: number;
     failed: number;
+    recoveredAfterRetry: number;
+    slowEndpoints: number;
     passRate: string;
     totalDurationMs: number;
   };
@@ -85,6 +113,9 @@ export interface CIJsonOutput {
     contentTypeMatched: boolean;
     valid: boolean;
     durationMs: number;
+    retryCount: number;
+    recoveredAfterRetry: boolean;
+    isSlowEndpoint: boolean;
     errorCount: number;
     errors: Array<{
       side: 'request' | 'response';
@@ -94,6 +125,13 @@ export interface CIJsonOutput {
       expected?: any;
       actual?: any;
     }>;
+  }>;
+  slowEndpoints: Array<{
+    endpoint: string;
+    method: string;
+    durationMs: number;
+    thresholdMs: number;
+    requestUrl: string;
   }>;
   exitCode: number;
 }
@@ -119,9 +157,15 @@ function deepSubstituteEnvVars(obj: any, env: { [key: string]: string }): any {
   return obj;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export class LiveContractTester {
   private config: Required<LiveTestConfig>;
   private validator: ContractValidator;
+  private _effectiveBaseUrl: string = '';
+  private _effectiveDefaultHeaders: { [key: string]: string } = {};
 
   constructor(config: LiveTestConfig, validator: ContractValidator) {
     this.config = {
@@ -130,85 +174,224 @@ export class LiveContractTester {
       timeoutMs: config.timeoutMs || 30000,
       validateRequest: config.validateRequest ?? true,
       validateResponse: config.validateResponse ?? true,
+      retries: config.retries ?? 0,
+      retryDelayMs: config.retryDelayMs ?? 1000,
+      slowThresholdMs: config.slowThresholdMs ?? 3000,
+      retryOnStatusCodes: config.retryOnStatusCodes ?? [0, 500, 502, 503, 504],
     };
     this.validator = validator;
+  }
+
+  get effectiveBaseUrl(): string {
+    return this._effectiveBaseUrl || this.config.baseUrl;
+  }
+
+  get effectiveDefaultHeaders(): { [key: string]: string } {
+    return { ...(this._effectiveDefaultHeaders || this.config.defaultHeaders) };
   }
 
   async runTests(testCases: ContractTestCase[]): Promise<LiveTestResult> {
     const results: TestCaseResult[] = [];
     const rawResponses: LiveTestResult['rawResponses'] = [];
+    const slowEndpoints: LiveTestResult['slowEndpoints'] = [];
+    const recoveredAfterRetry: TestCaseResult[] = [];
+
+    this._effectiveBaseUrl = this.config.baseUrl;
+    this._effectiveDefaultHeaders = { ...this.config.defaultHeaders };
 
     for (const tc of testCases) {
       if (tc.skip) continue;
 
-      const startTime = Date.now();
+      const tcRetries = tc.retries ?? this.config.retries;
+      const tcSlowThreshold = tc.slowThresholdMs ?? this.config.slowThresholdMs;
 
-      const mockRequest = this.buildMockRequest(tc);
+      let mockRequest = this.buildMockRequest(tc);
       const requestUrl = this.buildFullUrl(mockRequest);
       let mockResponse: MockResponse;
       let validation: ContractTestResult;
+      let retryCount = 0;
+      let lastError: any = null;
+      let firstFailAt = -1;
 
-      try {
-        mockResponse = await this.sendRequest(tc, mockRequest);
-        validation = this.validator.validateEndpoint(
-          mockRequest.path,
-          tc.method,
-          mockRequest,
-          mockResponse,
-        );
-      } catch (err: any) {
-        mockResponse = {
-          status: 0,
-          headers: {},
-          body: null,
-        };
-        validation = {
-          endpoint: mockRequest.path,
-          method: tc.method,
-          valid: false,
-          requestErrors: [],
-          responseErrors: [{
-            path: '$',
-            message: `Request failed: ${err.message || String(err)}`,
-            actual: err.code || 'NETWORK_ERROR',
-          }],
-          statusCodeMatched: false,
-          contentTypeMatched: false,
-        };
+      for (let attempt = 0; attempt <= tcRetries; attempt++) {
+        const startTime = Date.now();
+        try {
+          mockResponse = await this.sendRequest(tc, mockRequest);
+          validation = this.validator.validateEndpoint(
+            mockRequest.path,
+            tc.method,
+            mockRequest,
+            mockResponse,
+          );
+          const duration = Date.now() - startTime;
+          const isServerError = this.config.retryOnStatusCodes.includes(mockResponse.status);
+
+          if (validation.valid && !isServerError) {
+            const isSlowEndpoint = duration > tcSlowThreshold;
+            const recovered = firstFailAt === 0 && attempt > 0;
+
+            const contentType = mockResponse.headers?.['content-type'];
+            const testCaseResult: TestCaseResult = {
+              endpoint: mockRequest.path,
+              method: tc.method,
+              valid: true,
+              statusCode: mockResponse.status,
+              statusCodeMatched: validation.statusCodeMatched,
+              contentTypeMatched: validation.contentTypeMatched,
+              requestErrors: [],
+              responseErrors: [],
+              testCaseId: tc.id,
+              testCaseName: tc.name,
+              durationMs: duration,
+              requestUrl,
+              contentType: contentType || undefined,
+              retryCount,
+              recoveredAfterRetry: recovered,
+              isSlowEndpoint,
+            };
+
+            results.push(testCaseResult);
+            rawResponses.push({
+              testCase: tc,
+              request: mockRequest,
+              response: mockResponse,
+              validation,
+              retryCount,
+              isSlowEndpoint,
+            });
+
+            if (isSlowEndpoint) {
+              slowEndpoints.push({
+                endpoint: mockRequest.path,
+                method: tc.method,
+                durationMs: duration,
+                thresholdMs: tcSlowThreshold,
+                requestUrl,
+              });
+            }
+
+            if (recovered) {
+              recoveredAfterRetry.push(testCaseResult);
+            }
+            break;
+          }
+
+          if (attempt === 0) firstFailAt = 0;
+          if (attempt < tcRetries && (isServerError || validation.valid === false)) {
+            retryCount++;
+            await sleep(this.config.retryDelayMs);
+            continue;
+          }
+
+          const isSlowEndpoint = duration > tcSlowThreshold;
+          const contentType = mockResponse.headers?.['content-type'];
+          const testCaseResult: TestCaseResult = {
+            endpoint: mockRequest.path,
+            method: tc.method,
+            valid: validation.valid,
+            statusCode: mockResponse.status,
+            statusCodeMatched: validation.statusCodeMatched,
+            contentTypeMatched: validation.contentTypeMatched,
+            requestErrors: validation.requestErrors,
+            responseErrors: validation.responseErrors,
+            testCaseId: tc.id,
+            testCaseName: tc.name,
+            durationMs: duration,
+            requestUrl,
+            contentType: contentType || undefined,
+            retryCount,
+            recoveredAfterRetry: false,
+            isSlowEndpoint,
+          };
+
+          results.push(testCaseResult);
+          rawResponses.push({
+            testCase: tc,
+            request: mockRequest,
+            response: mockResponse,
+            validation,
+            retryCount,
+            isSlowEndpoint,
+          });
+
+          if (isSlowEndpoint) {
+            slowEndpoints.push({
+              endpoint: mockRequest.path,
+              method: tc.method,
+              durationMs: duration,
+              thresholdMs: tcSlowThreshold,
+              requestUrl,
+            });
+          }
+          break;
+        } catch (err: any) {
+          lastError = err;
+          if (attempt === 0) firstFailAt = 0;
+          if (attempt < tcRetries) {
+            retryCount++;
+            await sleep(this.config.retryDelayMs);
+            continue;
+          }
+
+          const duration = Date.now() - (mockRequest as any)._startTime || 0;
+          mockResponse = {
+            status: 0,
+            headers: {},
+            body: null,
+          };
+          validation = {
+            endpoint: mockRequest.path,
+            method: tc.method,
+            valid: false,
+            requestErrors: [],
+            responseErrors: [{
+              path: '$',
+              message: `Request failed: ${err.message || String(err)}`,
+              actual: err.code || 'NETWORK_ERROR',
+              expected: 'successful connection',
+            }],
+            statusCodeMatched: false,
+            contentTypeMatched: false,
+          };
+
+          const isSlowEndpoint = duration > tcSlowThreshold;
+          const testCaseResult: TestCaseResult = {
+            endpoint: mockRequest.path,
+            method: tc.method,
+            valid: false,
+            statusCode: 0,
+            statusCodeMatched: false,
+            contentTypeMatched: false,
+            requestErrors: [],
+            responseErrors: validation.responseErrors,
+            testCaseId: tc.id,
+            testCaseName: tc.name,
+            durationMs: duration,
+            requestUrl,
+            contentType: undefined,
+            retryCount,
+            recoveredAfterRetry: false,
+            isSlowEndpoint,
+          };
+
+          results.push(testCaseResult);
+          rawResponses.push({
+            testCase: tc,
+            request: mockRequest,
+            response: mockResponse,
+            validation,
+            retryCount,
+            isSlowEndpoint,
+          });
+          break;
+        }
       }
-
-      const duration = Date.now() - startTime;
-      const contentType = mockResponse.headers?.['content-type'];
-
-      const testCaseResult: TestCaseResult = {
-        endpoint: mockRequest.path,
-        method: tc.method,
-        valid: validation.valid,
-        statusCode: mockResponse.status,
-        statusCodeMatched: validation.statusCodeMatched,
-        contentTypeMatched: validation.contentTypeMatched,
-        requestErrors: validation.requestErrors,
-        responseErrors: validation.responseErrors,
-        testCaseId: tc.id,
-        testCaseName: tc.name,
-        durationMs: duration,
-        requestUrl,
-        contentType: contentType || undefined,
-      };
-
-      results.push(testCaseResult);
-      rawResponses.push({
-        testCase: tc,
-        request: mockRequest,
-        response: mockResponse,
-        validation,
-      });
     }
 
     const reportGenerator = new TestReportGenerator();
     const report = reportGenerator.generateReport(results);
 
-    return { report, results, rawResponses };
+    return { report, results, slowEndpoints, recoveredAfterRetry, rawResponses };
   }
 
   async runTestSuite(suite: TestSuiteFile): Promise<LiveTestResult> {
@@ -220,14 +403,21 @@ export class LiveContractTester {
     }
 
     const resolvedBaseUrl = substituteEnvVars(suite.baseUrl || this.config.baseUrl, mergedEnv);
+    const resolvedDefaultHeaders = deepSubstituteEnvVars({ ...this.config.defaultHeaders, ...suite.defaultHeaders }, mergedEnv);
+
+    this._effectiveBaseUrl = resolvedBaseUrl;
+    this._effectiveDefaultHeaders = resolvedDefaultHeaders;
 
     const resolvedCases: ContractTestCase[] = deepSubstituteEnvVars(suite.testCases, mergedEnv);
 
-    const config = {
+    const config: LiveTestConfig = {
       ...this.config,
       baseUrl: resolvedBaseUrl,
-      defaultHeaders: { ...this.config.defaultHeaders, ...suite.defaultHeaders },
+      defaultHeaders: resolvedDefaultHeaders,
       timeoutMs: suite.timeoutMs || this.config.timeoutMs,
+      retries: suite.retries ?? this.config.retries,
+      retryDelayMs: suite.retryDelayMs ?? this.config.retryDelayMs,
+      slowThresholdMs: suite.slowThresholdMs ?? this.config.slowThresholdMs,
     };
 
     const originalConfig = this.config;
@@ -280,6 +470,9 @@ export class LiveContractTester {
         contentTypeMatched: r.contentTypeMatched,
         valid: r.valid,
         durationMs: r.durationMs || 0,
+        retryCount: r.retryCount || 0,
+        recoveredAfterRetry: !!r.recoveredAfterRetry,
+        isSlowEndpoint: !!r.isSlowEndpoint,
         errorCount: allErrors.length,
         errors: allErrors.map((e) => {
           const msg = e.message.toLowerCase();
@@ -290,6 +483,7 @@ export class LiveContractTester {
           else if (msg.includes('enum') || msg.includes('allowed')) category = 'enum';
           else if (msg.includes('status') || msg.includes('unexpected')) category = 'status';
           else if (msg.includes('content-type')) category = 'content-type';
+          else if (msg.includes('network') || msg.includes('failed')) category = 'network';
 
           return {
             side: e.side,
@@ -304,18 +498,28 @@ export class LiveContractTester {
     });
 
     return {
-      version: '1.0',
+      version: '1.1',
       timestamp: new Date().toISOString(),
-      baseUrl: baseUrl || '',
+      baseUrl: baseUrl || this.effectiveBaseUrl,
       specPath,
+      effectiveConfig: {
+        baseUrl: this.effectiveBaseUrl,
+        defaultHeaders: this.effectiveDefaultHeaders,
+        timeoutMs: this.config.timeoutMs,
+        retries: this.config.retries,
+        slowThresholdMs: this.config.slowThresholdMs,
+      },
       summary: {
         total: s.total,
         passed: s.passed,
         failed: s.failed,
+        recoveredAfterRetry: (result.recoveredAfterRetry || []).length,
+        slowEndpoints: (result.slowEndpoints || []).length,
         passRate: `${s.passRate}%`,
         totalDurationMs: s.totalDurationMs,
       },
       results: ciResults,
+      slowEndpoints: result.slowEndpoints || [],
       exitCode,
     };
   }
@@ -394,6 +598,8 @@ export class LiveContractTester {
         timeout,
       };
 
+      (request as any)._startTime = Date.now();
+
       const req = lib.request(options, (res) => {
         const chunks: Buffer[] = [];
         res.on('data', (chunk) => chunks.push(chunk));
@@ -436,7 +642,7 @@ export class LiveContractTester {
   }
 
   private buildFullUrl(request: MockRequest): string {
-    let base = this.config.baseUrl.replace(/\/$/, '');
+    const base = this.config.baseUrl.replace(/\/$/, '');
     const reqPath = request.path.startsWith('/') ? request.path : `/${request.path}`;
     return base + reqPath;
   }
@@ -497,7 +703,7 @@ export async function runCITestSuite(
 
   const result = await tester.runTestSuite(suite);
 
-  const ciOutput = tester.generateCIJsonOutput(result, baseUrl, specPath);
+  const ciOutput = tester.generateCIJsonOutput(result, tester.effectiveBaseUrl, specPath);
   const exitCode = ciOutput.exitCode;
 
   if (outputOptions.jsonOutputPath) {
@@ -514,13 +720,23 @@ export async function runCITestSuite(
                    outputOptions.reportOutputPath.endsWith('.json') ? 'json' : 'text';
     const content = format === 'html' ? reportGenerator.formatAsHTML(result.report) :
                     format === 'json' ? reportGenerator.formatAsJSON(result.report) :
-                    reportGenerator.formatAsText(result.report);
+                    formatExtendedTextReport(result.report, result);
     fs.writeFileSync(path.resolve(outputOptions.reportOutputPath), content, 'utf-8');
   }
 
   if (outputOptions.printSummary) {
     const s = result.report.summary;
-    console.log(`\n契约测试完成: ${s.passed}/${s.total} 通过 (${s.passRate}%) | 退出码: ${exitCode}`);
+    console.log(`\n契约测试完成: ${s.passed}/${s.total} 通过 (${s.passRate}%)`);
+    if (result.recoveredAfterRetry.length > 0) {
+      console.log(`重试后恢复: ${result.recoveredAfterRetry.length} 个偶发问题`);
+    }
+    if (result.slowEndpoints.length > 0) {
+      console.log(`慢接口警告: ${result.slowEndpoints.length} 个接口超过阈值`);
+      for (const se of result.slowEndpoints) {
+        console.log(`  - ${se.method} ${se.endpoint} (${se.durationMs}ms > ${se.thresholdMs}ms)`);
+      }
+    }
+    console.log(`退出码: ${exitCode}`);
     if (s.failed > 0) {
       console.log(`失败 ${s.failed} 个用例，详见 ${outputOptions.jsonOutputPath || outputOptions.reportOutputPath || '上方报告'}`);
     }
@@ -529,4 +745,27 @@ export async function runCITestSuite(
   process.exitCode = exitCode;
 
   return { result, ciOutput, exitCode };
+}
+
+function formatExtendedTextReport(report: TestReport, result: LiveTestResult): string {
+  const generator = new TestReportGenerator();
+  const baseText = generator.formatAsText(report, { verbose: true });
+
+  const extraLines: string[] = ['', '── 补充信息 ─────────────────────────────────────────────'];
+
+  if (result.recoveredAfterRetry.length > 0) {
+    extraLines.push('✅ 重试后恢复的偶发问题:');
+    for (const r of result.recoveredAfterRetry) {
+      extraLines.push(`  ${r.method.toUpperCase()} ${r.endpoint} (重试 ${r.retryCount || 0} 次后通过)`);
+    }
+  }
+
+  if (result.slowEndpoints.length > 0) {
+    extraLines.push('⚠️  慢接口警告:');
+    for (const se of result.slowEndpoints) {
+      extraLines.push(`  ${se.method} ${se.endpoint} - ${se.durationMs}ms (阈值: ${se.thresholdMs}ms)`);
+    }
+  }
+
+  return baseText + '\n' + extraLines.join('\n');
 }

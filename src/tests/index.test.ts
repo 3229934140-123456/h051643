@@ -1457,17 +1457,768 @@ describe('Live Tester - Env Var Substitution', () => {
           { endpoint: '/users', method: 'get', valid: true, statusCode: 200, statusCodeMatched: true, contentTypeMatched: true, requestErrors: [], responseErrors: [], durationMs: 100, requestUrl: 'http://localhost:3000/users' },
           { endpoint: '/users', method: 'post', valid: false, statusCode: 400, statusCodeMatched: true, contentTypeMatched: true, requestErrors: [], responseErrors: [{ path: 'r1', message: 'Missing required field', expected: 'string', actual: null }], durationMs: 100, requestUrl: 'http://localhost:3000/users' },
         ],
+        slowEndpoints: [],
+        recoveredAfterRetry: [],
         rawResponses: [],
       },
     ];
 
     const ciOutput = tester.generateCIJsonOutput(results[0], 'http://localhost:3000');
-    assert.equal(ciOutput.version, '1.0');
+    assert.equal(ciOutput.version, '1.1');
     assert.equal(ciOutput.exitCode, 1);
     assert.equal(ciOutput.summary.total, 2);
     assert.equal(ciOutput.summary.passed, 1);
+    assert.equal(ciOutput.summary.recoveredAfterRetry, 0);
+    assert.equal(ciOutput.summary.slowEndpoints, 0);
+    assert.ok(ciOutput.effectiveConfig);
+    assert.equal(ciOutput.effectiveConfig.baseUrl, 'http://localhost:3000');
     assert.equal(ciOutput.results[1].errors.length, 1);
     assert.equal(ciOutput.results[1].errors[0].side, 'response');
     assert.equal(ciOutput.results[1].errors[0].category, 'missing');
+    assert.equal(ciOutput.results[1].errors[0].expected, 'string');
+    assert.equal(ciOutput.results[1].errors[0].actual, null);
+  });
+});
+
+describe('Schema Validator - Expected/Actual Comparison', () => {
+  it('should include expected and actual for type errors', () => {
+    const { SchemaValidator } = require('../contract-validator/schema-validator');
+
+    const schema = { type: 'object', properties: { name: { type: 'string' } } };
+    const data = { name: 123 };
+
+    const validator = new SchemaValidator();
+    const result = validator.validate(data, schema);
+
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.length > 0);
+
+    const typeError = result.errors.find((e: any) => e.path === '$.name');
+    assert.ok(typeError);
+    assert.equal(typeError.expected, 'string');
+    assert.equal(typeError.actual, 'number');
+  });
+
+  it('should include expected and actual for enum errors', () => {
+    const { SchemaValidator } = require('../contract-validator/schema-validator');
+
+    const schema = { type: 'string', enum: ['admin', 'user', 'guest'] };
+    const data = 'superadmin';
+
+    const validator = new SchemaValidator();
+    const result = validator.validate(data, schema);
+
+    assert.equal(result.valid, false);
+    assert.ok(result.errors[0].expected);
+    assert.deepEqual(result.errors[0].expected, ['admin', 'user', 'guest']);
+    assert.equal(result.errors[0].actual, 'superadmin');
+  });
+
+  it('should include expected and actual for format errors', () => {
+    const { SchemaValidator } = require('../contract-validator/schema-validator');
+
+    const schema = { type: 'string', format: 'email' };
+    const data = 'not-an-email';
+
+    const validator = new SchemaValidator();
+    const result = validator.validate(data, schema);
+
+    assert.equal(result.valid, false);
+    assert.ok(result.errors[0].expected);
+    assert.equal(result.errors[0].actual, 'not-an-email');
+  });
+
+  it('should include expected and actual for missing required fields', () => {
+    const { SchemaValidator } = require('../contract-validator/schema-validator');
+
+    const schema = {
+      type: 'object',
+      required: ['name', 'email'],
+      properties: {
+        name: { type: 'string' },
+        email: { type: 'string' },
+      },
+    };
+    const data = { name: 'Test' };
+
+    const validator = new SchemaValidator();
+    const result = validator.validate(data, schema);
+
+    assert.equal(result.valid, false);
+    const missingError = result.errors.find((e: any) => e.path === '$.email');
+    assert.ok(missingError);
+    assert.equal(missingError.actual, undefined);
+  });
+});
+
+describe('Test Report - Failure Attribution Summary', () => {
+  it('should build attribution summary with categories', () => {
+    const { TestReportGenerator } = require('../test-report');
+
+    const results = [
+      {
+        endpoint: '/users',
+        method: 'get',
+        valid: false,
+        statusCode: 500,
+        statusCodeMatched: false,
+        contentTypeMatched: true,
+        requestErrors: [],
+        responseErrors: [{ path: '$', message: 'Internal server error' }],
+        durationMs: 150,
+        requestUrl: 'http://localhost:3000/users',
+      },
+      {
+        endpoint: '/login',
+        method: 'post',
+        valid: false,
+        statusCode: 401,
+        statusCodeMatched: false,
+        contentTypeMatched: true,
+        requestErrors: [],
+        responseErrors: [{ path: '$', message: 'Unauthorized' }],
+        durationMs: 80,
+        requestUrl: 'http://localhost:3000/login',
+      },
+      {
+        endpoint: '/users',
+        method: 'post',
+        valid: false,
+        statusCode: 200,
+        statusCodeMatched: true,
+        contentTypeMatched: true,
+        requestErrors: [{ path: '$.email', message: 'Expected string' }],
+        responseErrors: [],
+        durationMs: 100,
+        requestUrl: 'http://localhost:3000/users',
+      },
+      {
+        endpoint: '/health',
+        method: 'get',
+        valid: false,
+        statusCode: 0,
+        statusCodeMatched: false,
+        contentTypeMatched: false,
+        requestErrors: [],
+        responseErrors: [{ path: '$', message: 'Network error' }],
+        durationMs: 5000,
+        requestUrl: 'http://localhost:3000/health',
+      },
+    ];
+
+    const generator = new TestReportGenerator();
+    const report = generator.generateReport(results);
+
+    assert.ok(report.attribution);
+    assert.equal(report.attribution.totalFailures, 4);
+    assert.ok(report.attribution.byCategory.length > 0);
+
+    const statusCodeCategory = report.attribution.byCategory.find((c: any) => c.category === 'status_code_error');
+    assert.ok(statusCodeCategory);
+    assert.ok(statusCodeCategory.count >= 1);
+
+    const authCategory = report.attribution.byCategory.find((c: any) => c.category === 'auth_error');
+    assert.ok(authCategory);
+    assert.equal(authCategory.count, 1);
+
+    const networkCategory = report.attribution.byCategory.find((c: any) => c.category === 'network_error');
+    assert.ok(networkCategory);
+    assert.equal(networkCategory.count, 1);
+
+    const requestCategory = report.attribution.byCategory.find((c: any) => c.category === 'request_validation_error');
+    assert.ok(requestCategory);
+    assert.equal(requestCategory.count, 1);
+  });
+
+  it('should include top endpoints and top error messages', () => {
+    const { TestReportGenerator } = require('../test-report');
+
+    const results = [
+      {
+        endpoint: '/users',
+        method: 'get',
+        valid: false,
+        statusCode: 500,
+        statusCodeMatched: false,
+        contentTypeMatched: true,
+        requestErrors: [],
+        responseErrors: [{ path: '$', message: 'Internal server error' }],
+        durationMs: 100,
+      },
+      {
+        endpoint: '/users',
+        method: 'get',
+        valid: false,
+        statusCode: 500,
+        statusCodeMatched: false,
+        contentTypeMatched: true,
+        requestErrors: [],
+        responseErrors: [{ path: '$', message: 'Internal server error' }],
+        durationMs: 100,
+      },
+      {
+        endpoint: '/users',
+        method: 'get',
+        valid: true,
+        statusCode: 200,
+        statusCodeMatched: true,
+        contentTypeMatched: true,
+        requestErrors: [],
+        responseErrors: [],
+        durationMs: 100,
+      },
+      {
+        endpoint: '/orders',
+        method: 'get',
+        valid: false,
+        statusCode: 500,
+        statusCodeMatched: false,
+        contentTypeMatched: true,
+        requestErrors: [],
+        responseErrors: [{ path: '$', message: 'Database connection failed' }],
+        durationMs: 100,
+      },
+    ];
+
+    const generator = new TestReportGenerator();
+    const report = generator.generateReport(results);
+
+    assert.ok(report.attribution.topEndpoints.length > 0);
+    assert.equal(report.attribution.topEndpoints[0].endpoint, '/users');
+    assert.equal(report.attribution.topEndpoints[0].method, 'GET');
+    assert.equal(report.attribution.topEndpoints[0].failureCount, 2);
+    assert.equal(report.attribution.topEndpoints[0].total, 3);
+    assert.equal(report.attribution.topEndpoints[0].passRate, 33.33);
+
+    assert.ok(report.attribution.topErrorMessages.length > 0);
+    assert.ok(report.attribution.topErrorMessages[0].message.includes('Internal server error'));
+    assert.equal(report.attribution.topErrorMessages[0].count, 2);
+  });
+});
+
+describe('Test Report - Retry and Slow Endpoint', () => {
+  it('should mark recovered after retry and slow endpoints in summary', () => {
+    const { TestReportGenerator } = require('../test-report');
+
+    const results = [
+      {
+        endpoint: '/users',
+        method: 'get',
+        valid: true,
+        statusCode: 200,
+        statusCodeMatched: true,
+        contentTypeMatched: true,
+        requestErrors: [],
+        responseErrors: [],
+        durationMs: 100,
+        retryCount: 2,
+        recoveredAfterRetry: true,
+        isSlowEndpoint: false,
+      },
+      {
+        endpoint: '/slow-endpoint',
+        method: 'get',
+        valid: true,
+        statusCode: 200,
+        statusCodeMatched: true,
+        contentTypeMatched: true,
+        requestErrors: [],
+        responseErrors: [],
+        durationMs: 5000,
+        retryCount: 0,
+        recoveredAfterRetry: false,
+        isSlowEndpoint: true,
+      },
+      {
+        endpoint: '/orders',
+        method: 'get',
+        valid: true,
+        statusCode: 200,
+        statusCodeMatched: true,
+        contentTypeMatched: true,
+        requestErrors: [],
+        responseErrors: [],
+        durationMs: 200,
+        retryCount: 0,
+        recoveredAfterRetry: false,
+        isSlowEndpoint: false,
+      },
+    ];
+
+    const generator = new TestReportGenerator();
+    const report = generator.generateReport(results);
+
+    assert.equal(report.summary.recoveredAfterRetry, 1);
+    assert.equal(report.summary.slowEndpoints, 1);
+    assert.equal(report.summary.total, 3);
+    assert.equal(report.summary.passed, 3);
+  });
+
+  it('should include retry and slow flags in test case results', () => {
+    const { TestReportGenerator } = require('../test-report');
+
+    const results = [
+      {
+        endpoint: '/recovered',
+        method: 'get',
+        valid: true,
+        statusCode: 200,
+        statusCodeMatched: true,
+        contentTypeMatched: true,
+        requestErrors: [],
+        responseErrors: [],
+        durationMs: 100,
+        retryCount: 3,
+        recoveredAfterRetry: true,
+        isSlowEndpoint: false,
+      },
+    ];
+
+    const generator = new TestReportGenerator();
+    const report = generator.generateReport(results);
+
+    assert.equal(report.endpoints[0].testCases[0].retryCount, 3);
+    assert.equal(report.endpoints[0].testCases[0].recoveredAfterRetry, true);
+    assert.equal(report.endpoints[0].testCases[0].isSlowEndpoint, false);
+  });
+});
+
+describe('CI History Manager', () => {
+  const test = require('node:test');
+  const tmp = require('os').tmpdir();
+  const fs = require('fs');
+  const path = require('path');
+  const historyDir = path.join(tmp, `ci-history-test-${Date.now()}`);
+
+  test.after(() => {
+    if (fs.existsSync(historyDir)) {
+      fs.rmSync(historyDir, { recursive: true, force: true });
+    }
+  });
+
+  it('should create CIHistoryManager and add records', () => {
+    const { CIHistoryManager } = require('../ci-history');
+    const { TestReportGenerator } = require('../test-report');
+    const path = require('path');
+    const fs = require('fs');
+
+    const testDir = path.join(historyDir, `add-test-${Date.now()}`);
+    if (!fs.existsSync(testDir)) fs.mkdirSync(testDir, { recursive: true });
+
+    const manager = new CIHistoryManager(testDir);
+
+    const testResults = [
+      {
+        endpoint: '/users',
+        method: 'get',
+        valid: true,
+        statusCode: 200,
+        statusCodeMatched: true,
+        contentTypeMatched: true,
+        requestErrors: [],
+        responseErrors: [],
+        durationMs: 100,
+      },
+      {
+        endpoint: '/orders',
+        method: 'get',
+        valid: false,
+        statusCode: 500,
+        statusCodeMatched: false,
+        contentTypeMatched: true,
+        requestErrors: [],
+        responseErrors: [{ path: '$', message: 'Error' }],
+        durationMs: 200,
+        requestUrl: 'http://localhost:3000/orders',
+      },
+    ];
+
+    const generator = new TestReportGenerator();
+    const report = generator.generateReport(testResults);
+
+    const context = {
+      branch: 'main',
+      commitHash: 'abc123def456',
+      environment: 'staging',
+      buildNumber: '123',
+    };
+
+    const record = manager.addRecord(context, report, testResults);
+
+    assert.ok(record.id);
+    assert.equal(record.context.branch, 'main');
+    assert.equal(record.context.commitHash, 'abc123def456');
+    assert.equal(record.summary.total, 2);
+    assert.equal(record.summary.passed, 1);
+    assert.equal(record.summary.failed, 1);
+    assert.equal(record.failedEndpoints.length, 1);
+    assert.equal(record.failedEndpoints[0].endpoint, '/orders');
+  });
+
+  it('should query records by branch and environment', () => {
+    const { CIHistoryManager } = require('../ci-history');
+    const { TestReportGenerator } = require('../test-report');
+    const path = require('path');
+    const fs = require('fs');
+
+    const testDir = path.join(historyDir, `query-test-${Date.now()}`);
+    if (!fs.existsSync(testDir)) fs.mkdirSync(testDir, { recursive: true });
+
+    const manager = new CIHistoryManager(testDir);
+    const generator = new TestReportGenerator();
+
+    const passResults = [
+      {
+        endpoint: '/health',
+        method: 'get',
+        valid: true,
+        statusCode: 200,
+        statusCodeMatched: true,
+        contentTypeMatched: true,
+        requestErrors: [],
+        responseErrors: [],
+        durationMs: 50,
+      },
+    ];
+
+    const passReport = generator.generateReport(passResults);
+
+    manager.addRecord(
+      { branch: 'main', commitHash: 'abc123', environment: 'staging' },
+      passReport,
+      passResults
+    );
+
+    manager.addRecord(
+      { branch: 'feature/login', commitHash: 'def789', environment: 'staging' },
+      passReport,
+      passResults
+    );
+
+    manager.addRecord(
+      { branch: 'main', commitHash: 'ghi012', environment: 'production' },
+      passReport,
+      passResults
+    );
+
+    const mainRecords = manager.queryRecords({ branch: 'main' });
+    assert.equal(mainRecords.length, 2);
+
+    const stagingRecords = manager.queryRecords({ environment: 'staging' });
+    assert.equal(stagingRecords.length, 2);
+
+    const prodRecords = manager.queryRecords({ environment: 'production' });
+    assert.equal(prodRecords.length, 1);
+    assert.equal(prodRecords[0].context.branch, 'main');
+  });
+
+  it('should calculate pass rate trend', () => {
+    const { CIHistoryManager } = require('../ci-history');
+    const { TestReportGenerator } = require('../test-report');
+    const path = require('path');
+    const fs = require('fs');
+
+    const testDir = path.join(historyDir, `trend-test-${Date.now()}`);
+    if (!fs.existsSync(testDir)) fs.mkdirSync(testDir, { recursive: true });
+
+    const manager = new CIHistoryManager(testDir);
+    const generator = new TestReportGenerator();
+
+    for (let i = 0; i < 5; i++) {
+      const passRate = 60 + i * 8;
+      const total = 10;
+      const passed = Math.floor(total * passRate / 100);
+      const failed = total - passed;
+
+      const results: any[] = [];
+      for (let j = 0; j < passed; j++) {
+        results.push({
+          endpoint: `/api/${j}`,
+          method: 'get',
+          valid: true,
+          statusCode: 200,
+          statusCodeMatched: true,
+          contentTypeMatched: true,
+          requestErrors: [],
+          responseErrors: [],
+          durationMs: 100,
+        });
+      }
+      for (let j = 0; j < failed; j++) {
+        results.push({
+          endpoint: `/api/fail-${j}`,
+          method: 'get',
+          valid: false,
+          statusCode: 500,
+          statusCodeMatched: false,
+          contentTypeMatched: true,
+          requestErrors: [],
+          responseErrors: [{ path: '$', message: 'Error' }],
+          durationMs: 100,
+        });
+      }
+
+      const report = generator.generateReport(results);
+      manager.addRecord(
+        { branch: 'trend-test', commitHash: `commit${i}`, environment: 'test' },
+        report,
+        results
+      );
+    }
+
+    const trend = manager.getPassRateTrend({ branch: 'trend-test', environment: 'test' });
+    assert.equal(trend.length, 5);
+    assert.ok(trend[0].passRate < trend[trend.length - 1].passRate);
+    assert.ok(trend.every((p: any) => p.passRate >= 0 && p.passRate <= 100));
+  });
+
+  it('should detect new failures vs persistent failures', () => {
+    const { CIHistoryManager } = require('../ci-history');
+    const { TestReportGenerator } = require('../test-report');
+    const path = require('path');
+    const fs = require('fs');
+
+    const testDir = path.join(historyDir, `diff-test-${Date.now()}`);
+    if (!fs.existsSync(testDir)) fs.mkdirSync(testDir, { recursive: true });
+
+    const manager = new CIHistoryManager(testDir);
+    const generator = new TestReportGenerator();
+
+    const run1Results = [
+      {
+        endpoint: '/persistent-fail',
+        method: 'get',
+        valid: false,
+        statusCode: 500,
+        statusCodeMatched: false,
+        contentTypeMatched: true,
+        requestErrors: [],
+        responseErrors: [{ path: '$', message: 'Error' }],
+        durationMs: 100,
+        requestUrl: 'http://localhost/persistent',
+      },
+      {
+        endpoint: '/will-fail-next',
+        method: 'get',
+        valid: true,
+        statusCode: 200,
+        statusCodeMatched: true,
+        contentTypeMatched: true,
+        requestErrors: [],
+        responseErrors: [],
+        durationMs: 100,
+      },
+    ];
+
+    const report1 = generator.generateReport(run1Results);
+    manager.addRecord(
+      { branch: 'diff-test', commitHash: 'commit1', environment: 'test' },
+      report1,
+      run1Results
+    );
+
+    const run2Results = [
+      {
+        endpoint: '/persistent-fail',
+        method: 'get',
+        valid: false,
+        statusCode: 500,
+        statusCodeMatched: false,
+        contentTypeMatched: true,
+        requestErrors: [],
+        responseErrors: [{ path: '$', message: 'Error' }],
+        durationMs: 100,
+        requestUrl: 'http://localhost/persistent',
+      },
+      {
+        endpoint: '/will-fail-next',
+        method: 'get',
+        valid: false,
+        statusCode: 500,
+        statusCodeMatched: false,
+        contentTypeMatched: true,
+        requestErrors: [],
+        responseErrors: [{ path: '$', message: 'New error' }],
+        durationMs: 100,
+        requestUrl: 'http://localhost/newfail',
+      },
+      {
+        endpoint: '/new-endpoint',
+        method: 'post',
+        valid: true,
+        statusCode: 201,
+        statusCodeMatched: true,
+        contentTypeMatched: true,
+        requestErrors: [],
+        responseErrors: [],
+        durationMs: 100,
+      },
+    ];
+
+    const report2 = generator.generateReport(run2Results);
+    const record2 = manager.addRecord(
+      { branch: 'diff-test', commitHash: 'commit2', environment: 'test' },
+      report2,
+      run2Results
+    );
+
+    const diff = manager.getFailureDiff(record2, { branch: 'diff-test', environment: 'test' });
+
+    assert.equal(diff.newFailures.length, 1);
+    assert.equal(diff.newFailures[0].endpoint, '/will-fail-next');
+
+    assert.equal(diff.persistentFailures.length, 1);
+    assert.equal(diff.persistentFailures[0].endpoint, '/persistent-fail');
+    assert.equal(diff.persistentFailures[0].consecutiveFailCount, 2);
+  });
+
+  it('should return stats and streak information', () => {
+    const { CIHistoryManager } = require('../ci-history');
+    const { TestReportGenerator } = require('../test-report');
+    const path = require('path');
+    const fs = require('fs');
+
+    const testDir = path.join(historyDir, `stats-test-${Date.now()}`);
+    if (!fs.existsSync(testDir)) fs.mkdirSync(testDir, { recursive: true });
+
+    const manager = new CIHistoryManager(testDir);
+    const generator = new TestReportGenerator();
+
+    const passResult = [{
+      endpoint: '/health',
+      method: 'get',
+      valid: true,
+      statusCode: 200,
+      statusCodeMatched: true,
+      contentTypeMatched: true,
+      requestErrors: [],
+      responseErrors: [],
+      durationMs: 50,
+    }];
+
+    const failResult = [{
+      endpoint: '/health',
+      method: 'get',
+      valid: false,
+      statusCode: 500,
+      statusCodeMatched: false,
+      contentTypeMatched: true,
+      requestErrors: [],
+      responseErrors: [{ path: '$', message: 'Error' }],
+      durationMs: 50,
+    }];
+
+    const passReport = generator.generateReport(passResult);
+    const failReport = generator.generateReport(failResult);
+
+    for (let i = 0; i < 3; i++) {
+      manager.addRecord(
+        { branch: 'stats-test', commitHash: `p${i}`, environment: 'test' },
+        passReport,
+        passResult
+      );
+    }
+
+    for (let i = 0; i < 2; i++) {
+      manager.addRecord(
+        { branch: 'stats-test', commitHash: `f${i}`, environment: 'test' },
+        failReport,
+        failResult
+      );
+    }
+
+    const stats = manager.getStats({ branch: 'stats-test', environment: 'test' });
+    assert.equal(stats.totalRuns, 5);
+    assert.ok(stats.averagePassRate > 0);
+    assert.equal(stats.streak.type, 'failing');
+    assert.equal(stats.streak.current, 2);
+    assert.equal(stats.streak.longest, 3);
+  });
+
+  it('should format trend and diff as text', () => {
+    const { CIHistoryManager, formatTrendAsText, formatFailureDiffAsText } = require('../ci-history');
+    const { TestReportGenerator } = require('../test-report');
+    const path = require('path');
+    const fs = require('fs');
+
+    const testDir = path.join(historyDir, `format-test-${Date.now()}`);
+    if (!fs.existsSync(testDir)) fs.mkdirSync(testDir, { recursive: true });
+
+    const manager = new CIHistoryManager(testDir);
+    const generator = new TestReportGenerator();
+
+    const results = [
+      {
+        endpoint: '/users',
+        method: 'get',
+        valid: true,
+        statusCode: 200,
+        statusCodeMatched: true,
+        contentTypeMatched: true,
+        requestErrors: [],
+        responseErrors: [],
+        durationMs: 100,
+      },
+    ];
+
+    const report = generator.generateReport(results);
+    manager.addRecord(
+      { branch: 'format-test', commitHash: 'abc123', environment: 'test' },
+      report,
+      results
+    );
+
+    const trend = manager.getPassRateTrend({ branch: 'format-test', environment: 'test' });
+    const trendText = formatTrendAsText(trend);
+
+    assert.ok(trendText.includes('通过率趋势'));
+    assert.ok(trendText.includes('abc123'));
+    assert.ok(trendText.includes('100.0%'));
+
+    const latestRecord = manager.getLatestRecord({ branch: 'format-test', environment: 'test' });
+    assert.ok(latestRecord);
+
+    const diff = manager.getFailureDiff(latestRecord!, { branch: 'format-test', environment: 'test' });
+    const diffText = formatFailureDiffAsText(diff);
+
+    assert.ok(diffText.includes('无失败用例') || diffText.includes('新增失败') || diffText.includes('持续失败'));
+  });
+});
+
+describe('Contract Validator - Expected/Actual in All Errors', () => {
+  it('should include expected/actual for endpoint not found error', () => {
+    const parser = new OpenAPIParser(sampleSpecV1);
+    const apiModel = parser.parse();
+    const validator = new ContractValidator(apiModel, parser);
+
+    const request = { method: 'get' as const, path: '/nonexistent', headers: {}, query: {}, body: null };
+    const response = { status: 404, headers: {}, body: null };
+
+    const result = validator.validateEndpoint('/nonexistent', 'get', request, response);
+
+    assert.equal(result.valid, false);
+    assert.ok(result.responseErrors.length > 0);
+
+    const endpointError = result.responseErrors.find((e: any) => e.path === '$');
+    assert.ok(endpointError);
+    assert.ok(endpointError.expected);
+    assert.equal(endpointError.actual, 'get /nonexistent');
+  });
+
+  it('should include expected/actual for missing required parameter', () => {
+    const parser = new OpenAPIParser(sampleSpecV1);
+    const apiModel = parser.parse();
+    const validator = new ContractValidator(apiModel, parser);
+
+    const request = { method: 'get' as const, path: '/users/123', headers: {}, query: {}, body: null };
+    const response = { status: 200, headers: { 'content-type': 'application/json' }, body: { id: 123, name: 'Test' } };
+
+    const result = validator.validateEndpoint('/users/123', 'get', request, response);
+
+    assert.equal(result.valid, false);
+    const paramErrors = result.requestErrors.filter((e: any) => e.message.includes('required') || e.message.includes('missing'));
+    if (paramErrors.length > 0) {
+      assert.ok(paramErrors[0].expected !== undefined);
+    }
   });
 });

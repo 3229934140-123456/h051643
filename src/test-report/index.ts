@@ -14,6 +14,47 @@ export interface TestCaseResult {
   durationMs?: number;
   requestUrl?: string;
   contentType?: string;
+  retryCount?: number;
+  recoveredAfterRetry?: boolean;
+  isSlowEndpoint?: boolean;
+}
+
+export type FailureCategory =
+  | 'status_code_error'
+  | 'response_structure_error'
+  | 'auth_error'
+  | 'network_error'
+  | 'request_validation_error'
+  | 'content_type_error'
+  | 'other_error';
+
+export interface AttributionItem {
+  category: FailureCategory;
+  categoryLabel: string;
+  icon: string;
+  count: number;
+  percentage: number;
+  testCases: Array<{
+    testCaseId?: string;
+    testCaseName?: string;
+    endpoint: string;
+    method: string;
+    statusCode: number;
+    requestUrl?: string;
+    errorCount: number;
+  }>;
+  topErrors: Array<{
+    message: string;
+    count: number;
+    paths: string[];
+  }>;
+}
+
+export interface AttributionSummary {
+  totalFailures: number;
+  byCategory: AttributionItem[];
+  topEndpoints: Array<{ endpoint: string; method: string; failureCount: number; passRate: number; total: number }>;
+  topErrorMessages: Array<{ message: string; count: number; percentage: number }>;
 }
 
 export interface SummaryStats {
@@ -27,6 +68,8 @@ export interface SummaryStats {
   byValidationType: ValidationTypeStats;
   failedEndpointsCount: number;
   totalEndpointsCount: number;
+  recoveredAfterRetry: number;
+  slowEndpoints: number;
 }
 
 export interface MethodGroupStats {
@@ -85,6 +128,9 @@ export interface FailedCaseDetail {
   responseErrors: CategorizedError[];
   commonRootCauses: string[];
   durationMs?: number;
+  retryCount?: number;
+  recoveredAfterRetry?: boolean;
+  isSlowEndpoint?: boolean;
 }
 
 export interface FailedCaseFilter {
@@ -93,6 +139,7 @@ export interface FailedCaseFilter {
   statusCodeMismatch?: boolean;
   contentTypeMismatch?: boolean;
   category?: ErrorCategory;
+  failureCategory?: FailureCategory;
 }
 
 export interface TestReport {
@@ -100,20 +147,33 @@ export interface TestReport {
   summary: SummaryStats;
   endpoints: EndpointGroupStats[];
   failedDetails: FailedCaseDetail[];
+  attribution: AttributionSummary;
   filterFailedDetails(filter: FailedCaseFilter): FailedCaseDetail[];
 }
+
+const CATEGORY_META: Record<FailureCategory, { label: string; icon: string }> = {
+  status_code_error: { label: '状态码错误', icon: '🔴' },
+  response_structure_error: { label: '响应结构错误', icon: '📦' },
+  auth_error: { label: '鉴权错误', icon: '🔐' },
+  network_error: { label: '网络错误', icon: '🌐' },
+  request_validation_error: { label: '请求参数错误', icon: '📥' },
+  content_type_error: { label: 'Content-Type 错误', icon: '🏷️' },
+  other_error: { label: '其他错误', icon: '❓' },
+};
 
 export class TestReportGenerator {
   generateReport(results: TestCaseResult[]): TestReport {
     const summary = this.buildSummary(results);
     const endpoints = this.buildEndpointGroups(results);
     const failedDetails = this.buildFailedDetails(results);
+    const attribution = this.buildAttributionSummary(results);
 
     return {
       generatedAt: new Date().toISOString(),
       summary,
       endpoints,
       failedDetails,
+      attribution,
       filterFailedDetails(filter: FailedCaseFilter): FailedCaseDetail[] {
         return failedDetails.filter((d) => {
           if (filter.side === 'request' && d.requestErrors.length === 0) return false;
@@ -124,6 +184,12 @@ export class TestReportGenerator {
           if (filter.category !== undefined) {
             const allErrors = [...d.requestErrors, ...d.responseErrors];
             if (!allErrors.some((e) => e.category === filter.category)) return false;
+          }
+          if (filter.failureCategory !== undefined) {
+            const dCategory = categorizeTestCaseFailure(
+              (d as any)._sourceResult as TestCaseResult,
+            );
+            if (dCategory !== filter.failureCategory) return false;
           }
           return true;
         });
@@ -137,6 +203,8 @@ export class TestReportGenerator {
     const failed = total - passed;
     const passRate = total === 0 ? 100 : Math.round((passed / total) * 10000) / 100;
     const totalDurationMs = results.reduce((s, r) => s + (r.durationMs || 0), 0);
+    const recoveredAfterRetry = results.filter((r) => r.recoveredAfterRetry).length;
+    const slowEndpoints = results.filter((r) => r.isSlowEndpoint).length;
 
     const methodMap = new Map<string, TestCaseResult[]>();
     for (const r of results) {
@@ -205,6 +273,8 @@ export class TestReportGenerator {
       byValidationType,
       failedEndpointsCount: failedEndpointKeys.size,
       totalEndpointsCount: endpointKeys.size,
+      recoveredAfterRetry,
+      slowEndpoints,
     };
   }
 
@@ -242,7 +312,7 @@ export class TestReportGenerator {
         const requestErrors = r.requestErrors.map((e) => this.categorizeError(e));
         const responseErrors = r.responseErrors.map((e) => this.categorizeError(e));
 
-        return {
+        const detail: FailedCaseDetail & { _sourceResult?: TestCaseResult } = {
           testCaseId: r.testCaseId || undefined,
           testCaseName: r.testCaseName || undefined,
           endpoint: r.endpoint,
@@ -256,8 +326,104 @@ export class TestReportGenerator {
           responseErrors,
           commonRootCauses,
           durationMs: r.durationMs,
+          retryCount: r.retryCount,
+          recoveredAfterRetry: r.recoveredAfterRetry,
+          isSlowEndpoint: r.isSlowEndpoint,
+          _sourceResult: r,
         };
+        return detail;
       });
+  }
+
+  private buildAttributionSummary(results: TestCaseResult[]): AttributionSummary {
+    const failedResults = results.filter((r) => !r.valid);
+    const totalFailures = failedResults.length;
+
+    const categoryMap = new Map<FailureCategory, TestCaseResult[]>();
+    const endpointFailMap = new Map<string, { total: number; failed: number }>();
+    const messageMap = new Map<string, { count: number; paths: string[] }>();
+
+    for (const r of failedResults) {
+      const cat = categorizeTestCaseFailure(r);
+      if (!categoryMap.has(cat)) categoryMap.set(cat, []);
+      categoryMap.get(cat)!.push(r);
+
+      const epKey = `${r.method}:${r.endpoint}`;
+      if (!endpointFailMap.has(epKey)) endpointFailMap.set(epKey, { total: 0, failed: 0 });
+      const stats = endpointFailMap.get(epKey)!;
+      stats.failed++;
+
+      for (const err of [...r.requestErrors, ...r.responseErrors]) {
+        if (!messageMap.has(err.message)) messageMap.set(err.message, { count: 0, paths: [] });
+        const msgStat = messageMap.get(err.message)!;
+        msgStat.count++;
+        if (!msgStat.paths.includes(err.path)) msgStat.paths.push(err.path);
+      }
+    }
+
+    for (const r of results) {
+      const epKey = `${r.method}:${r.endpoint}`;
+      if (!endpointFailMap.has(epKey)) endpointFailMap.set(epKey, { total: 0, failed: 0 });
+      endpointFailMap.get(epKey)!.total++;
+    }
+
+    const byCategory: AttributionItem[] = [];
+    for (const [cat, items] of categoryMap.entries()) {
+      const meta = CATEGORY_META[cat];
+      const errMap = new Map<string, { count: number; paths: string[] }>();
+      for (const r of items) {
+        for (const err of [...r.requestErrors, ...r.responseErrors]) {
+          if (!errMap.has(err.message)) errMap.set(err.message, { count: 0, paths: [] });
+          const stat = errMap.get(err.message)!;
+          stat.count++;
+          if (!stat.paths.includes(err.path)) stat.paths.push(err.path);
+        }
+      }
+      const topErrors = Array.from(errMap.entries())
+        .map(([message, s]) => ({ message, count: s.count, paths: s.paths.slice(0, 3) }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 5);
+
+      byCategory.push({
+        category: cat,
+        categoryLabel: meta.label,
+        icon: meta.icon,
+        count: items.length,
+        percentage: totalFailures === 0 ? 0 : Math.round((items.length / totalFailures) * 100),
+        testCases: items.map((r) => ({
+          testCaseId: r.testCaseId,
+          testCaseName: r.testCaseName,
+          endpoint: r.endpoint,
+          method: r.method,
+          statusCode: r.statusCode,
+          requestUrl: r.requestUrl,
+          errorCount: r.requestErrors.length + r.responseErrors.length,
+        })),
+        topErrors,
+      });
+    }
+    byCategory.sort((a, b) => b.count - a.count);
+
+    const topEndpoints = Array.from(endpointFailMap.entries())
+      .filter(([, s]) => s.failed > 0)
+      .map(([key, s]) => {
+        const [method, endpoint] = key.split(':', 2);
+        const passRate = s.total === 0 ? 0 : Math.round(((s.total - s.failed) / s.total) * 10000) / 100;
+        return { endpoint, method: method.toUpperCase(), failureCount: s.failed, passRate, total: s.total };
+      })
+      .sort((a, b) => b.failureCount - a.failureCount)
+      .slice(0, 10);
+
+    const topErrorMessages = Array.from(messageMap.entries())
+      .map(([message, s]) => ({
+        message,
+        count: s.count,
+        percentage: totalFailures === 0 ? 0 : Math.round((s.count / totalFailures) * 100),
+      }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
+
+    return { totalFailures, byCategory, topEndpoints, topErrorMessages };
   }
 
   private categorizeError(error: ValidationError): CategorizedError {
@@ -312,6 +478,8 @@ export class TestReportGenerator {
     if (typeErrorCount > 0) causes.push(`存在 ${typeErrorCount} 处字段类型错误`);
     if (formatCount > 0) causes.push(`存在 ${formatCount} 处数据格式校验失败`);
     if (enumCount > 0) causes.push(`存在 ${enumCount} 处枚举值不匹配`);
+    if (result.recoveredAfterRetry) causes.push('首次请求失败，经重试后通过（偶发问题）');
+    if (result.isSlowEndpoint) causes.push('接口响应较慢，已超过慢接口阈值');
 
     return causes;
   }
@@ -361,36 +529,65 @@ export class TestReportGenerator {
     const s = report.summary;
     const lines: string[] = [];
 
-    lines.push('╔══════════════════════════════════════════════════════════════╗');
-    lines.push('║                  📋 契约测试汇总报告                        ║');
-    lines.push('╠══════════════════════════════════════════════════════════════╣');
-    lines.push(`║ 生成时间:  ${this.padRight(report.generatedAt, 48)}║`);
-    lines.push(`║ 用例总数:  ${this.padRight(String(s.total), 48)}║`);
-    lines.push(`║ ✅ 通过:   ${this.padRight(String(s.passed), 48)}║`);
-    lines.push(`║ ❌ 失败:   ${this.padRight(String(s.failed), 48)}║`);
-    lines.push(`║ 📊 通过率: ${this.padRight(s.passRate + '%', 46)}║`);
-    lines.push(`║ ⏱  总耗时: ${this.padRight(s.totalDurationMs + 'ms', 44)}║`);
-    lines.push('╠══════════════════════════════════════════════════════════════╣');
-    lines.push('║ 按 HTTP 方法 分组:                                          ║');
+    lines.push('╔════════════════════════════════════════════════════════════════════╗');
+    lines.push('║                    📋 契约测试汇总报告                             ║');
+    lines.push('╠════════════════════════════════════════════════════════════════════╣');
+    lines.push(`║ 生成时间:  ${this.padRight(report.generatedAt, 54)}║`);
+    lines.push(`║ 用例总数:  ${this.padRight(String(s.total), 54)}║`);
+    lines.push(`║ ✅ 通过:   ${this.padRight(String(s.passed), 54)}║`);
+    lines.push(`║ ❌ 失败:   ${this.padRight(String(s.failed), 54)}║`);
+    lines.push(`║ 📊 通过率: ${this.padRight(s.passRate + '%', 52)}║`);
+    lines.push(`║ ⏱  总耗时: ${this.padRight(s.totalDurationMs + 'ms', 50)}║`);
+    if (s.recoveredAfterRetry > 0) lines.push(`║ 🔄 重试通过: ${this.padRight(String(s.recoveredAfterRetry), 50)}║`);
+    if (s.slowEndpoints > 0) lines.push(`║ 🐢 慢接口:   ${this.padRight(String(s.slowEndpoints), 50)}║`);
+    lines.push('╠════════════════════════════════════════════════════════════════════╣');
+    lines.push('║ 按 HTTP 方法 分组:                                                ║');
     for (const m of s.byMethod) {
       lines.push(`║   ${this.padRight(m.method, 8)} ${this.padRight(`${m.passed}/${m.total}`, 10)} (${m.passRate}%)${' '.repeat(32)}║`);
     }
-    lines.push('╠══════════════════════════════════════════════════════════════╣');
-    lines.push('║ 按实际状态码 分组:                                          ║');
+    lines.push('╠════════════════════════════════════════════════════════════════════╣');
+    lines.push('║ 按实际状态码 分组:                                                ║');
     for (const sc of s.byRealStatusCode) {
       const label = sc.statusCode === 0 ? '0 (网络错误)' : String(sc.statusCode);
       lines.push(`║   ${this.padRight(label, 12)} ${this.padRight(`${sc.passed}/${sc.total}`, 10)} (${sc.passRate}%)${' '.repeat(28)}║`);
     }
-    lines.push('╠══════════════════════════════════════════════════════════════╣');
-    lines.push('║ 校验类型错误分布:                                           ║');
-    lines.push(`║   请求参数校验失败: ${this.padRight(String(s.byValidationType.requestValidation.failed), 38)}║`);
-    lines.push(`║   响应体校验失败:   ${this.padRight(String(s.byValidationType.responseValidation.failed), 38)}║`);
-    lines.push(`║   状态码校验失败:   ${this.padRight(String(s.byValidationType.statusCodeValidation.failed), 38)}║`);
-    lines.push(`║   Content-Type:    ${this.padRight(String(s.byValidationType.contentTypeValidation.failed), 38)}║`);
-    lines.push('╚══════════════════════════════════════════════════════════════╝');
+    lines.push('╠════════════════════════════════════════════════════════════════════╣');
+    lines.push('║ 校验类型错误分布:                                                 ║');
+    lines.push(`║   请求参数校验失败: ${this.padRight(String(s.byValidationType.requestValidation.failed), 44)}║`);
+    lines.push(`║   响应体校验失败:   ${this.padRight(String(s.byValidationType.responseValidation.failed), 44)}║`);
+    lines.push(`║   状态码校验失败:   ${this.padRight(String(s.byValidationType.statusCodeValidation.failed), 44)}║`);
+    lines.push(`║   Content-Type:    ${this.padRight(String(s.byValidationType.contentTypeValidation.failed), 44)}║`);
+    lines.push('╚════════════════════════════════════════════════════════════════════╝');
+
+    if (report.attribution.totalFailures > 0) {
+      lines.push('');
+      lines.push('── 📊 失败归因汇总 Top 列表 ────────────────────────────────────────');
+      for (let i = 0; i < report.attribution.byCategory.length; i++) {
+        const a = report.attribution.byCategory[i];
+        lines.push(`\n${i + 1}. ${a.icon} ${a.categoryLabel}: ${a.count} 个 (${a.percentage}%)`);
+        for (const tc of a.testCases.slice(0, 5)) {
+          lines.push(`   • ${tc.method.toUpperCase()} ${tc.endpoint} [${tc.statusCode}] ${tc.requestUrl || ''}`);
+        }
+        if (a.testCases.length > 5) lines.push(`   ... 还有 ${a.testCases.length - 5} 个用例`);
+        if (a.topErrors.length > 0) {
+          lines.push(`   常见错误:`);
+          for (const te of a.topErrors.slice(0, 3)) {
+            lines.push(`     - ${te.count}x ${te.message}`);
+          }
+        }
+      }
+
+      if (report.attribution.topEndpoints.length > 0) {
+        lines.push('\n── 🔌 失败最多的端点 Top 10 ───────────────────────────────────────');
+        for (let i = 0; i < report.attribution.topEndpoints.length; i++) {
+          const ep = report.attribution.topEndpoints[i];
+          lines.push(`  ${i + 1}. ${ep.method} ${ep.endpoint} - ${ep.failureCount}/${ep.total} 失败 (${ep.passRate}% 通过)`);
+        }
+      }
+    }
 
     lines.push('');
-    lines.push('── 按端点分组详情 ──────────────────────────────────────────────');
+    lines.push('── 按端点分组详情 ──────────────────────────────────────────────────');
     for (const g of report.endpoints) {
       const icon = g.failed === 0 ? '✅' : '❌';
       lines.push(`${icon} ${this.padRight(g.method, 6)} ${this.padRight(g.endpoint, 35)} ${g.passed}/${g.total} (${g.passRate}%)`);
@@ -400,7 +597,9 @@ export class TestReportGenerator {
             const tIcon = r.valid ? '  ✓' : '  ✗';
             const name = r.testCaseName || '(未命名用例)';
             const urlInfo = r.requestUrl ? ` → ${r.requestUrl}` : '';
-            lines.push(`${tIcon} ${name} [${r.statusCode}] ${r.durationMs || 0}ms${urlInfo}`);
+            const retryInfo = r.recoveredAfterRetry ? ` [重试${r.retryCount || 0}次后通过]` : '';
+            const slowInfo = r.isSlowEndpoint ? ' [慢接口]' : '';
+            lines.push(`${tIcon} ${name} [${r.statusCode}] ${r.durationMs || 0}ms${urlInfo}${retryInfo}${slowInfo}`);
             if (!r.valid) {
               for (const err of r.requestErrors) lines.push(`       📥 [${err.path}] ${err.message}`);
               for (const err of r.responseErrors) lines.push(`       📤 [${err.path}] ${err.message}`);
@@ -412,11 +611,15 @@ export class TestReportGenerator {
 
     if (report.failedDetails.length > 0) {
       lines.push('');
-      lines.push('── 失败用例详细分析 ──────────────────────────────────────────');
+      lines.push('── 失败用例详细分析 ────────────────────────────────────────────────');
       for (let i = 0; i < report.failedDetails.length; i++) {
         const d = report.failedDetails[i];
         lines.push(`\n【${i + 1}】${d.testCaseName || '(未命名)'} ${d.method.toUpperCase()} ${d.endpoint}`);
-        lines.push(`    状态码: ${d.statusCode} (${d.statusCodeMatched ? '匹配' : '不匹配'}) | Content-Type: ${d.contentTypeMatched ? '匹配' : '不匹配'}${d.contentType ? ` (${d.contentType})` : ''}`);
+        const flags: string[] = [];
+        if (d.recoveredAfterRetry) flags.push(`重试${d.retryCount || 0}次后通过`);
+        if (d.isSlowEndpoint) flags.push('慢接口');
+        const flagStr = flags.length > 0 ? ` [${flags.join(', ')}]` : '';
+        lines.push(`    状态码: ${d.statusCode} (${d.statusCodeMatched ? '匹配' : '不匹配'}) | Content-Type: ${d.contentTypeMatched ? '匹配' : '不匹配'}${d.contentType ? ` (${d.contentType})` : ''}${flagStr}`);
         if (d.requestUrl) lines.push(`    请求地址: ${d.requestUrl}`);
         if (d.durationMs !== undefined) lines.push(`    耗时: ${d.durationMs}ms`);
         if (d.commonRootCauses.length > 0) {
@@ -430,9 +633,10 @@ export class TestReportGenerator {
             lines.push(`         ${err.message}`);
             if (err.expected !== undefined) lines.push(`         期望: ${this.truncateValue(err.expected)}`);
             if (err.actual !== undefined) lines.push(`         实际: ${this.truncateValue(err.actual)}`);
-            if (err.suggestions && err.suggestions.length > 0) {
+            const suggestions = err.suggestions || [];
+            if (suggestions.length > 0) {
               lines.push(`         💡 建议:`);
-              for (const sg of err.suggestions) lines.push(`            ${sg}`);
+              for (const sg of suggestions) lines.push(`            ${sg}`);
             }
           }
         }
@@ -443,9 +647,10 @@ export class TestReportGenerator {
             lines.push(`         ${err.message}`);
             if (err.expected !== undefined) lines.push(`         期望: ${this.truncateValue(err.expected)}`);
             if (err.actual !== undefined) lines.push(`         实际: ${this.truncateValue(err.actual)}`);
-            if (err.suggestions && err.suggestions.length > 0) {
+            const suggestions = err.suggestions || [];
+            if (suggestions.length > 0) {
               lines.push(`         💡 建议:`);
-              for (const sg of err.suggestions) lines.push(`            ${sg}`);
+              for (const sg of suggestions) lines.push(`            ${sg}`);
             }
           }
         }
@@ -457,7 +662,7 @@ export class TestReportGenerator {
 
   formatAsJSON(report: TestReport): string {
     return JSON.stringify(report, (key, value) => {
-      if (key === 'filterFailedDetails') return undefined;
+      if (key === 'filterFailedDetails' || key === '_sourceResult') return undefined;
       return value;
     }, 2);
   }
@@ -497,12 +702,75 @@ export class TestReportGenerator {
       })
       .join('');
 
+    const attributionHtml = report.attribution.totalFailures > 0 ? `
+      <div class="card">
+        <h2>📊 失败归因汇总</h2>
+        ${report.attribution.byCategory.map((a) => `
+          <div class="attribution-group">
+            <div class="attribution-header">
+              <span class="attribution-icon">${a.icon}</span>
+              <span class="attribution-label">${this.escapeHtml(a.categoryLabel)}</span>
+              <span class="attribution-count">${a.count} 个</span>
+              <span class="attribution-pct">${a.percentage}%</span>
+            </div>
+            <div class="attribution-bar"><div class="attribution-bar-fill" style="width:${a.percentage}%"></div></div>
+            ${a.testCases.length > 0 ? `
+              <div class="attribution-tc-list">
+                ${a.testCases.slice(0, 5).map((tc) => `
+                  <div class="attribution-tc">
+                    <span class="method-tag method-${tc.method.toLowerCase()}">${tc.method.toUpperCase()}</span>
+                    <span class="atc-endpoint">${this.escapeHtml(tc.endpoint)}</span>
+                    <span class="atc-status">${tc.statusCode}</span>
+                    ${tc.requestUrl ? `<span class="atc-url">${this.escapeHtml(tc.requestUrl)}</span>` : ''}
+                  </div>
+                `).join('')}
+                ${a.testCases.length > 5 ? `<div class="atc-more">还有 ${a.testCases.length - 5} 个用例...</div>` : ''}
+              </div>
+            ` : ''}
+            ${a.topErrors.length > 0 ? `
+              <div class="attribution-top-errs">
+                <div class="section-subtitle">常见错误:</div>
+                ${a.topErrors.map((te) => `
+                  <div class="top-err">
+                    <span class="te-count">${te.count}x</span>
+                    <span class="te-msg">${this.escapeHtml(te.message)}</span>
+                  </div>
+                `).join('')}
+              </div>
+            ` : ''}
+          </div>
+        `).join('')}
+
+        ${report.attribution.topEndpoints.length > 0 ? `
+          <div class="mt20">
+            <div class="section-subtitle">🔌 失败最多的端点 Top ${report.attribution.topEndpoints.length}</div>
+            <table>
+              <thead><tr><th>方法</th><th>端点</th><th class="num">总数</th><th class="num">失败</th><th class="num">通过率</th></tr></thead>
+              <tbody>
+                ${report.attribution.topEndpoints.map((ep) => `
+                  <tr class="fail">
+                    <td><span class="method-tag method-${ep.method.toLowerCase()}">${ep.method}</span></td>
+                    <td class="endpoint-cell">${this.escapeHtml(ep.endpoint)}</td>
+                    <td class="num">${ep.total}</td>
+                    <td class="num">${ep.failureCount}</td>
+                    <td class="num">${ep.passRate}%</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        ` : ''}
+      </div>
+    ` : '';
+
     const failedCasesHtml = report.failedDetails
       .map((d, i) => {
         const errorsHtml = this.renderErrorsForHtml(d);
         const urlInfo = d.requestUrl ? `<span class="fc-url">${this.escapeHtml(d.requestUrl)}</span>` : '';
         const durationInfo = d.durationMs !== undefined ? `<span class="fc-duration">${d.durationMs}ms</span>` : '';
         const ctInfo = d.contentType ? `<span class="fc-ct">${this.escapeHtml(d.contentType)}</span>` : '';
+        const retryInfo = d.recoveredAfterRetry ? `<span class="fc-retry">🔄 重试${d.retryCount || 0}次</span>` : '';
+        const slowInfo = d.isSlowEndpoint ? `<span class="fc-slow">🐢 慢接口</span>` : '';
         return `
           <div class="failed-case" id="fc-${i}">
             <div class="failed-header" onclick="toggleFold('fc-body-${i}')">
@@ -511,7 +779,7 @@ export class TestReportGenerator {
               <span class="fc-endpoint">${this.escapeHtml(d.endpoint)}</span>
               <span class="fc-name">${this.escapeHtml(d.testCaseName || '(未命名用例)')}</span>
               <span class="fc-status ${d.statusCodeMatched ? 'tag-green' : 'tag-red'}">${d.statusCode || 'N/A'}</span>
-              ${urlInfo}${durationInfo}${ctInfo}
+              ${urlInfo}${durationInfo}${ctInfo}${retryInfo}${slowInfo}
               <span class="fc-arrow">▼</span>
             </div>
             <div class="failed-body" id="fc-body-${i}">
@@ -534,6 +802,8 @@ export class TestReportGenerator {
         <button class="filter-btn" onclick="filterFailed('response')">📤 响应侧</button>
         <button class="filter-btn" onclick="filterFailed('status')">⚠️ 状态码不匹配</button>
         <button class="filter-btn" onclick="filterFailed('content-type')">🏷️ Content-Type</button>
+        <button class="filter-btn" onclick="filterFailed('slow')">🐢 慢接口</button>
+        <button class="filter-btn" onclick="filterFailed('retry')">🔄 重试后通过</button>
       </div>` : '';
 
     return `<!DOCTYPE html>
@@ -561,6 +831,8 @@ export class TestReportGenerator {
     .failed-box .value { color: #dc2626; }
     .duration-box { background: #3b82f615; border: 1px solid #3b82f640; }
     .duration-box .value { color: #2563eb; }
+    .extra-box { background: #f59e0b15; border: 1px solid #f59e0b40; }
+    .extra-box .value { color: #d97706; }
     table { width: 100%; border-collapse: collapse; }
     th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #eef0f4; font-size: 13px; }
     th { background: #f8fafc; font-weight: 600; color: #475569; }
@@ -594,10 +866,13 @@ export class TestReportGenerator {
     .fc-url { font-family: "SF Mono", Menlo, monospace; font-size: 11px; color: #7f1d1d; background: #fee2e2; padding: 2px 6px; border-radius: 3px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .fc-duration { font-size: 11px; color: #64748b; background: #f1f5f9; padding: 2px 6px; border-radius: 3px; }
     .fc-ct { font-size: 11px; color: #6d28d9; background: #ede9fe; padding: 2px 6px; border-radius: 3px; }
+    .fc-retry { font-size: 11px; color: #047857; background: #d1fae5; padding: 2px 6px; border-radius: 3px; }
+    .fc-slow { font-size: 11px; color: #92400e; background: #fef3c7; padding: 2px 6px; border-radius: 3px; }
     .tag-green { background: #22c55e; } .tag-red { background: #ef4444; }
     .fc-arrow { color: #7f1d1d; font-size: 11px; }
     .failed-body { padding: 16px 20px; border-top: 1px solid #fecaca; }
     .section-title { font-weight: 700; margin: 12px 0 8px; color: #7f1d1d; }
+    .section-subtitle { font-weight: 600; margin: 12px 0 8px; color: #444; font-size: 14px; }
     .root-cause ul { margin: 4px 0; padding-left: 20px; }
     .root-cause li { margin: 4px 0; color: #444; }
     .err-group { background: #fff; border-radius: 6px; padding: 10px 14px; margin-bottom: 10px; border-left: 3px solid #ef4444; }
@@ -616,6 +891,25 @@ export class TestReportGenerator {
     .suggestions ul { margin: 0; padding-left: 18px; }
     .suggestions li { color: #1e3a8a; font-size: 12px; margin: 2px 0; }
     .hidden { display: none !important; }
+    .mt20 { margin-top: 20px; }
+    .attribution-group { border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px 16px; margin-bottom: 12px; background: #fafafa; }
+    .attribution-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+    .attribution-icon { font-size: 18px; }
+    .attribution-label { font-weight: 600; font-size: 14px; color: #1f2937; }
+    .attribution-count { background: #ef4444; color: #fff; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 700; }
+    .attribution-pct { color: #6b7280; font-size: 12px; margin-left: auto; }
+    .attribution-bar { background: #e5e7eb; height: 6px; border-radius: 3px; overflow: hidden; margin-bottom: 10px; }
+    .attribution-bar-fill { background: #ef4444; height: 100%; }
+    .attribution-tc-list { margin: 8px 0; }
+    .attribution-tc { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 12px; flex-wrap: wrap; }
+    .atc-endpoint { font-family: "SF Mono", Menlo, monospace; color: #1e40af; }
+    .atc-status { color: #dc2626; font-weight: 700; }
+    .atc-url { color: #64748b; font-family: "SF Mono", Menlo, monospace; font-size: 11px; background: #f1f5f9; padding: 1px 6px; border-radius: 3px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .atc-more { color: #64748b; font-size: 12px; font-style: italic; padding-left: 4px; }
+    .attribution-top-errs { margin-top: 8px; }
+    .top-err { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 12px; }
+    .te-count { background: #fbbf24; color: #fff; padding: 1px 8px; border-radius: 3px; font-weight: 700; font-size: 11px; min-width: 26px; text-align: center; }
+    .te-msg { color: #374151; }
   </style>
 </head>
 <body>
@@ -630,6 +924,11 @@ export class TestReportGenerator {
         <div class="stat-box passed-box"><div class="label">通过</div><div class="value">${s.passed}</div></div>
         <div class="stat-box failed-box"><div class="label">失败</div><div class="value">${s.failed}</div></div>
         <div class="stat-box duration-box"><div class="label">总耗时</div><div class="value">${s.totalDurationMs}ms</div></div>
+      </div>
+      <div class="stat-grid" style="grid-template-columns: repeat(4, 1fr); margin-top: 10px;">
+        ${s.recoveredAfterRetry > 0 ? `<div class="stat-box extra-box"><div class="label">重试后通过</div><div class="value">${s.recoveredAfterRetry}</div></div>` : ''}
+        ${s.slowEndpoints > 0 ? `<div class="stat-box extra-box"><div class="label">慢接口</div><div class="value">${s.slowEndpoints}</div></div>` : ''}
+        ${s.recoveredAfterRetry === 0 && s.slowEndpoints === 0 ? '' : '<div></div><div></div>'}
       </div>
       <div class="validation-summary">
         <div class="v-box"><div class="label">请求参数校验失败</div><div class="count ${s.byValidationType.requestValidation.failed > 0 ? 'error' : 'ok'}">${s.byValidationType.requestValidation.failed}</div></div>
@@ -646,6 +945,8 @@ export class TestReportGenerator {
         <tbody>${statusCodeRows}</tbody>
       </table>
     </div>
+
+    ${attributionHtml}
 
     <div class="card">
       <h2>🔌 按端点分组</h2>
@@ -673,9 +974,11 @@ export class TestReportGenerator {
       document.querySelectorAll('.failed-case').forEach(fc => {
         fc.classList.remove('hidden');
         if (type === 'all') return;
+        const header = fc.querySelector('.failed-header');
+        if (type === 'slow' && !header.querySelector('.fc-slow')) fc.classList.add('hidden');
+        if (type === 'retry' && !header.querySelector('.fc-retry')) fc.classList.add('hidden');
         const hasReqErr = fc.querySelector('.err-group-title')?.textContent?.includes('请求');
         const hasRespErr = fc.querySelector('.err-group-title')?.textContent?.includes('响应');
-        const header = fc.querySelector('.failed-header');
         const statusTag = header?.querySelector('.fc-status');
         const isStatusMismatch = statusTag?.classList.contains('tag-red');
         if (type === 'request' && !hasReqErr) fc.classList.add('hidden');
@@ -748,6 +1051,17 @@ export class TestReportGenerator {
   }
 }
 
+function categorizeTestCaseFailure(result: TestCaseResult): FailureCategory {
+  const status = result.statusCode;
+  if (status === 0) return 'network_error';
+  if (status === 401 || status === 403 || status === 407) return 'auth_error';
+  if (!result.statusCodeMatched) return 'status_code_error';
+  if (!result.contentTypeMatched) return 'content_type_error';
+  if (result.requestErrors.length > 0) return 'request_validation_error';
+  if (result.responseErrors.length > 0) return 'response_structure_error';
+  return 'other_error';
+}
+
 export function generateTestReport(results: TestCaseResult[]): TestReport {
   return new TestReportGenerator().generateReport(results);
 }
@@ -768,3 +1082,5 @@ export function formatReport(
       return g.formatAsText(report, options);
   }
 }
+
+
