@@ -866,3 +866,369 @@ describe('Docs Generator', () => {
     assert.ok(html.includes('cURL'));
   });
 });
+
+describe('Test Report Generator', () => {
+  it('should generate summary with pass/fail counts', () => {
+    const { TestReportGenerator } = require('../test-report');
+    const generator = new TestReportGenerator();
+
+    const results: any[] = [
+      {
+        testCaseId: '1',
+        testCaseName: '获取用户列表',
+        endpoint: '/users',
+        method: 'get',
+        valid: true,
+        statusCode: 200,
+        requestErrors: [],
+        responseErrors: [],
+        statusCodeMatched: true,
+        contentTypeMatched: true,
+        durationMs: 120,
+      },
+      {
+        testCaseId: '2',
+        testCaseName: '创建用户',
+        endpoint: '/users',
+        method: 'post',
+        valid: false,
+        statusCode: 201,
+        requestErrors: [],
+        responseErrors: [
+          { path: 'response.body.email', message: 'Required property "email" is missing' },
+        ],
+        statusCodeMatched: true,
+        contentTypeMatched: true,
+        durationMs: 85,
+      },
+    ];
+
+    const report = generator.generateReport(results);
+
+    assert.equal(report.summary.total, 2);
+    assert.equal(report.summary.passed, 1);
+    assert.equal(report.summary.failed, 1);
+    assert.equal(report.summary.passRate, 50);
+    assert.equal(report.summary.totalDurationMs, 205);
+  });
+
+  it('should group by method and status code', () => {
+    const { TestReportGenerator } = require('../test-report');
+    const generator = new TestReportGenerator();
+
+    const results: any[] = [
+      { endpoint: '/users', method: 'get', valid: true, statusCode: 200, requestErrors: [], responseErrors: [], statusCodeMatched: true, contentTypeMatched: true },
+      { endpoint: '/users', method: 'get', valid: true, statusCode: 200, requestErrors: [], responseErrors: [], statusCodeMatched: true, contentTypeMatched: true },
+      { endpoint: '/users', method: 'post', valid: false, statusCode: 201, requestErrors: [], responseErrors: [{ path: '$', message: 'err' }], statusCodeMatched: true, contentTypeMatched: true },
+    ];
+
+    const report = generator.generateReport(results);
+
+    const getGroup = report.summary.byMethod.find((g: any) => g.method === 'GET');
+    assert.ok(getGroup);
+    assert.equal(getGroup.passed, 2);
+
+    const postGroup = report.summary.byMethod.find((g: any) => g.method === 'POST');
+    assert.ok(postGroup);
+    assert.equal(postGroup.failed, 1);
+  });
+
+  it('should extract failed details with error paths', () => {
+    const { TestReportGenerator } = require('../test-report');
+    const generator = new TestReportGenerator();
+
+    const results: any[] = [
+      {
+        testCaseName: '失败用例',
+        endpoint: '/users/123',
+        method: 'get',
+        valid: false,
+        statusCode: 200,
+        requestErrors: [{ path: 'request.path.userId', message: 'Invalid uuid' }],
+        responseErrors: [{ path: 'response.body.name', message: 'Required', actual: null, expected: 'string' }],
+        statusCodeMatched: true,
+        contentTypeMatched: true,
+      },
+    ];
+
+    const report = generator.generateReport(results);
+    assert.equal(report.failedDetails.length, 1);
+    assert.equal(report.failedDetails[0].requestErrors.length, 1);
+    assert.equal(report.failedDetails[0].responseErrors.length, 1);
+    assert.equal(report.failedDetails[0].responseErrors[0].path, 'response.body.name');
+    assert.equal(report.failedDetails[0].responseErrors[0].actual, null);
+  });
+
+  it('should format as text report', () => {
+    const { TestReportGenerator } = require('../test-report');
+    const generator = new TestReportGenerator();
+
+    const results: any[] = [
+      { endpoint: '/users', method: 'get', valid: true, statusCode: 200, requestErrors: [], responseErrors: [], statusCodeMatched: true, contentTypeMatched: true, durationMs: 100 },
+    ];
+
+    const report = generator.generateReport(results);
+    const text = generator.formatAsText(report);
+
+    assert.ok(text.includes('契约测试汇总报告'));
+    assert.ok(text.includes('用例总数'));
+    assert.ok(text.includes('通过率'));
+    assert.ok(text.includes('GET'));
+  });
+
+  it('should format as HTML report', () => {
+    const { TestReportGenerator } = require('../test-report');
+    const generator = new TestReportGenerator();
+
+    const results: any[] = [
+      { testCaseName: 'TC1', endpoint: '/users', method: 'get', valid: true, statusCode: 200, requestErrors: [], responseErrors: [], statusCodeMatched: true, contentTypeMatched: true },
+    ];
+
+    const report = generator.generateReport(results);
+    const html = generator.formatAsHTML(report);
+
+    assert.ok(html.includes('<!DOCTYPE html>'));
+    assert.ok(html.includes('契约测试汇总报告'));
+    assert.ok(html.includes('通过率'));
+  });
+});
+
+describe('Mock State Import/Export', () => {
+  let parser: OpenAPIParser;
+  let mockEngine: any;
+
+  beforeEach(() => {
+    parser = new OpenAPIParser(sampleSpecV1);
+    const apiModel = parser.parse();
+    const MockEngineModule = require('../mock-engine');
+    mockEngine = new MockEngineModule.MockEngine(apiModel, parser, 42);
+  });
+
+  it('should export state as JSON string', () => {
+    mockEngine.resetState();
+
+    const req1: any = { path: '/users', method: 'post' as HttpMethod, body: { name: 'User1', email: 'a@b.com' } };
+    const req2: any = { path: '/users', method: 'post' as HttpMethod, body: { name: 'User2', email: 'c@d.com' } };
+    mockEngine.handleRequest(req1);
+    mockEngine.handleRequest(req2);
+
+    const exported = mockEngine.exportState();
+    assert.equal(typeof exported, 'string');
+    const parsed = JSON.parse(exported as string);
+    assert.equal(parsed.version, 1);
+    assert.ok(parsed.resources.users);
+    assert.equal(Object.keys(parsed.resources.users).length, 2);
+  });
+
+  it('should import state and restore resources', () => {
+    mockEngine.resetState();
+
+    const fixture: any = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      resources: {
+        users: {
+          '99': { id: '99', name: 'ImportedUser', email: 'imported@test.com', status: 'active', createdAt: '2024-01-01T00:00:00Z', updatedAt: '2024-01-01T00:00:00Z' },
+        },
+      },
+      nextIds: { users: 100 },
+    };
+
+    const result = mockEngine.importState(fixture);
+    assert.equal(result.imported, 1);
+
+    const getReq: any = { path: '/users/99', method: 'get' as HttpMethod };
+    const getResp = mockEngine.handleRequest(getReq);
+    assert.equal(getResp.status, 200);
+    assert.equal(getResp.body.name, 'ImportedUser');
+    assert.equal(getResp.body.id, '99');
+  });
+
+  it('should support merge mode import', () => {
+    mockEngine.resetState();
+
+    const req1: any = { path: '/users', method: 'post' as HttpMethod, body: { name: 'OldUser', email: 'old@test.com' } };
+    mockEngine.handleRequest(req1);
+
+    const fixture: any = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      resources: {
+        users: {
+          'new-1': { id: 'new-1', name: 'NewUser', email: 'new@test.com', status: 'active', createdAt: '2024-01-01T00:00:00Z', updatedAt: '2024-01-01T00:00:00Z' },
+        },
+      },
+      nextIds: { users: 5 },
+    };
+
+    const result = mockEngine.importState(fixture, { mode: 'merge', resetBeforeImport: false });
+    assert.equal(result.imported, 1);
+
+    const listReq: any = { path: '/users', method: 'get' as HttpMethod };
+    const listResp = mockEngine.handleRequest(listReq);
+    assert.ok(listResp.body.data.length >= 2);
+  });
+
+  it('should load fixture with preset data', () => {
+    mockEngine.resetState();
+
+    const { MockFixture } = require('../mock-engine');
+    const fixture: any = {
+      name: 'test-fixture',
+      fixedTime: '2024-06-17T12:00:00Z',
+      resources: {
+        users: [
+          { name: 'FixtureUser1', email: 'f1@test.com', status: 'active' },
+          { name: 'FixtureUser2', email: 'f2@test.com', status: 'inactive' },
+        ],
+        orders: [
+          { userId: '1', totalAmount: 100, status: 'paid', items: [] },
+        ],
+      },
+    };
+
+    const result = mockEngine.loadFixture(fixture);
+    assert.equal(result.loaded, 3);
+
+    const userListReq: any = { path: '/users', method: 'get' as HttpMethod };
+    const userListResp = mockEngine.handleRequest(userListReq);
+    assert.equal(userListResp.body.data.length, 2);
+    assert.equal(userListResp.body.data[0].createdAt, '2024-06-17T12:00:00Z');
+  });
+
+  it('should generate fixture automatically from schema', () => {
+    const fixture = mockEngine.generateFixture({
+      resourceTypes: ['users', 'orders'],
+      counts: { users: 3, orders: 2 },
+      fixedTime: '2024-01-01T00:00:00Z',
+    });
+
+    assert.ok(fixture);
+    assert.equal(fixture.resources.users.length, 3);
+    assert.equal(fixture.resources.orders.length, 2);
+    assert.ok(fixture.resources.users[0].name);
+    assert.ok(fixture.resources.users[0].email);
+  });
+
+  it('should support getResourceSnapshot and getResourceCount', () => {
+    mockEngine.resetState();
+
+    const req1: any = { path: '/users', method: 'post' as HttpMethod, body: { name: 'A', email: 'a@a.com' } };
+    const req2: any = { path: '/users', method: 'post' as HttpMethod, body: { name: 'B', email: 'b@b.com' } };
+    mockEngine.handleRequest(req1);
+    mockEngine.handleRequest(req2);
+
+    assert.equal(mockEngine.getResourceCount('users'), 2);
+    assert.equal(mockEngine.getResourceCount(), 2);
+
+    const snapshot = mockEngine.getResourceSnapshot('users');
+    assert.equal(Object.keys(snapshot).length, 2);
+
+    const ids = mockEngine.getResourceIds('users');
+    assert.equal(ids.length, 2);
+  });
+});
+
+describe('Compatibility Checker - CI Enhanced', () => {
+  it('should classify breaking changes into request/response side', () => {
+    const parser1 = new OpenAPIParser(sampleSpecV1);
+    const parser2 = new OpenAPIParser(sampleSpecV2);
+    const oldModel = parser1.parse();
+    const newModel = parser2.parse();
+
+    const checker = new CompatibilityChecker();
+    const result = checker.checkWithCI(oldModel, newModel);
+
+    assert.ok(result.classification);
+    assert.ok(result.summary);
+    assert.ok(typeof result.exitCode === 'number');
+    assert.ok(result.severityLevel);
+
+    const requestBreaking = result.classification.requestSideBreaking;
+    const responseBreaking = result.classification.responseSideBreaking;
+    assert.ok(requestBreaking.length >= 0);
+    assert.ok(responseBreaking.length >= 0);
+    assert.ok(requestBreaking.length + responseBreaking.length >= 1);
+  });
+
+  it('should return correct exit codes based on severity', () => {
+    const { getCompatibilityExitCode, checkCompatibilityWithCI } = require('../compatibility-checker');
+
+    const parser1 = new OpenAPIParser(sampleSpecV1);
+    const parser2 = new OpenAPIParser(sampleSpecV2);
+    const parser3 = new OpenAPIParser(breakingChangeSpec);
+    const v1 = parser1.parse();
+    const v2 = parser2.parse();
+    const v3 = parser3.parse();
+
+    const breakingResult = checkCompatibilityWithCI(v1, v3);
+    assert.ok(breakingResult.exitCode >= 1);
+    assert.equal(breakingResult.severityLevel, 'danger');
+
+    const exitCode = getCompatibilityExitCode(breakingResult);
+    assert.equal(exitCode, breakingResult.exitCode);
+
+    const sameResult = checkCompatibilityWithCI(v1, v1);
+    assert.equal(sameResult.exitCode, 0);
+    assert.equal(sameResult.severityLevel, 'safe');
+  });
+
+  it('should generate recommendations', () => {
+    const parser1 = new OpenAPIParser(sampleSpecV1);
+    const parser2 = new OpenAPIParser(sampleSpecV2);
+    const oldModel = parser1.parse();
+    const newModel = parser2.parse();
+
+    const checker = new CompatibilityChecker();
+    const result = checker.checkWithCI(oldModel, newModel);
+
+    assert.ok(result.recommendations.length > 0);
+    assert.ok(result.recommendations.some((r: string) => r.includes('变更') || r.includes('新增') || r.includes('删除') || r.includes('兼容')));
+  });
+
+  it('should format report as text', () => {
+    const { formatCompatibilityReport, checkCompatibilityWithCI } = require('../compatibility-checker');
+
+    const parser1 = new OpenAPIParser(sampleSpecV1);
+    const parser2 = new OpenAPIParser(sampleSpecV2);
+    const v1 = parser1.parse();
+    const v2 = parser2.parse();
+
+    const result = checkCompatibilityWithCI(v1, v2);
+    const text = formatCompatibilityReport(result, 'text');
+
+    assert.ok(text.includes('兼容性检查报告'));
+    assert.ok(text.includes('严重级别'));
+    assert.ok(text.includes('CI 退出码'));
+    assert.ok(text.includes('请求侧') || text.includes('响应侧'));
+  });
+
+  it('should format report as markdown', () => {
+    const { formatCompatibilityReport, checkCompatibilityWithCI } = require('../compatibility-checker');
+
+    const parser1 = new OpenAPIParser(sampleSpecV1);
+    const parser2 = new OpenAPIParser(sampleSpecV2);
+    const v1 = parser1.parse();
+    const v2 = parser2.parse();
+
+    const result = checkCompatibilityWithCI(v1, v2);
+    const md = formatCompatibilityReport(result, 'markdown');
+
+    assert.ok(md.includes('# API 兼容性检查报告'));
+    assert.ok(md.includes('| 类别 | 数量 |'));
+    assert.ok(md.includes('## 💡 建议'));
+  });
+
+  it('should distinguish added fields as non-breaking', () => {
+    const parser1 = new OpenAPIParser(sampleSpecV1);
+    const parser2 = new OpenAPIParser(sampleSpecV2);
+    const oldModel = parser1.parse();
+    const newModel = parser2.parse();
+
+    const checker = new CompatibilityChecker();
+    const result = checker.checkWithCI(oldModel, newModel);
+
+    assert.ok(result.summary.addedFieldsCount >= 1);
+    assert.ok(result.classification.addedFields.length >= 1);
+  });
+});

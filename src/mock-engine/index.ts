@@ -338,6 +338,301 @@ export class MockEngine {
 
     return examples;
   }
+
+  exportState(options?: {
+    format?: 'json' | 'object';
+    pretty?: boolean;
+    includeMeta?: boolean;
+  }): string | MockStateExport {
+    const opts = { format: 'json' as const, pretty: true, includeMeta: true, ...options };
+
+    const exportData: MockStateExport = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      resources: JSON.parse(JSON.stringify(this.state.resources)),
+      nextIds: JSON.parse(JSON.stringify(this.state.nextIds)),
+    };
+
+    if (opts.includeMeta) {
+      exportData.meta = {
+        resourceCount: Object.keys(exportData.resources).reduce(
+          (sum, k) => sum + Object.keys(exportData.resources[k]).length,
+          0,
+        ),
+        resourceTypes: Object.keys(exportData.resources),
+      };
+    }
+
+    if (opts.format === 'object') {
+      return exportData;
+    }
+
+    return opts.pretty ? JSON.stringify(exportData, null, 2) : JSON.stringify(exportData);
+  }
+
+  importState(data: string | MockStateExport, options?: {
+    mode?: 'replace' | 'merge';
+    resetBeforeImport?: boolean;
+    validateIds?: boolean;
+  }): { imported: number; warnings: string[] } {
+    const opts = {
+      mode: 'replace' as 'replace' | 'merge',
+      resetBeforeImport: true,
+      validateIds: true,
+      ...options,
+    };
+
+    const warnings: string[] = [];
+
+    let parsed: MockStateExport;
+    if (typeof data === 'string') {
+      try {
+        parsed = JSON.parse(data);
+      } catch (e) {
+        throw new Error(`Failed to parse import data: ${(e as Error).message}`);
+      }
+    } else {
+      parsed = data;
+    }
+
+    if (parsed.version !== 1) {
+      warnings.push(`Unsupported export version: ${parsed.version}, trying anyway`);
+    }
+
+    if (opts.resetBeforeImport) {
+      this.resetState();
+    }
+
+    if (opts.mode === 'replace') {
+      this.state.resources = JSON.parse(JSON.stringify(parsed.resources || {}));
+      this.state.nextIds = JSON.parse(JSON.stringify(parsed.nextIds || {}));
+    } else {
+      for (const [resourceType, items] of Object.entries(parsed.resources || {})) {
+        if (!this.state.resources[resourceType]) {
+          this.state.resources[resourceType] = {};
+        }
+        for (const [id, item] of Object.entries(items)) {
+          if (opts.validateIds && id in this.state.resources[resourceType]) {
+            warnings.push(`Overwriting existing ${resourceType} with id=${id}`);
+          }
+          this.state.resources[resourceType][id] = JSON.parse(JSON.stringify(item));
+        }
+      }
+      for (const [resourceType, nextId] of Object.entries(parsed.nextIds || {})) {
+        const existing = this.state.nextIds[resourceType] || 1;
+        this.state.nextIds[resourceType] = Math.max(existing, nextId as number);
+      }
+    }
+
+    const imported = Object.keys(parsed.resources || {}).reduce(
+      (sum, k) => sum + Object.keys(parsed.resources[k]).length,
+      0,
+    );
+
+    return { imported, warnings };
+  }
+
+  loadFixture(fixture: MockFixture): { loaded: number; warnings: string[] } {
+    const warnings: string[] = [];
+    let loaded = 0;
+
+    if (fixture.resetBeforeLoad ?? true) {
+      this.resetState();
+    }
+
+    for (const [resourceType, items] of Object.entries(fixture.resources || {})) {
+      if (!this.state.resources[resourceType]) {
+        this.state.resources[resourceType] = {};
+        this.state.nextIds[resourceType] = 1;
+      }
+
+      for (const item of items) {
+        const resource = { ...item };
+        let id = resource.id;
+
+        if (!id) {
+          id = String(this.state.nextIds[resourceType]++);
+          resource.id = id;
+        } else {
+          const idNum = parseInt(id);
+          if (!isNaN(idNum) && idNum >= (this.state.nextIds[resourceType] || 0)) {
+            this.state.nextIds[resourceType] = idNum + 1;
+          }
+        }
+
+        if (!resource.createdAt) {
+          resource.createdAt = fixture.fixedTime || new Date().toISOString();
+        }
+        if (!resource.updatedAt) {
+          resource.updatedAt = fixture.fixedTime || new Date().toISOString();
+        }
+
+        if (id in this.state.resources[resourceType]) {
+          warnings.push(`Overwriting ${resourceType} id=${id}`);
+        }
+        this.state.resources[resourceType][id] = resource;
+        loaded++;
+      }
+    }
+
+    if (fixture.nextIds) {
+      for (const [type, id] of Object.entries(fixture.nextIds)) {
+        const existing = this.state.nextIds[type] || 1;
+        this.state.nextIds[type] = Math.max(existing, id as number);
+      }
+    }
+
+    return { loaded, warnings };
+  }
+
+  generateFixture(options: {
+    resourceTypes: string[];
+    counts: { [resourceType: string]: number };
+    fixedTime?: string;
+    overrides?: { [resourceType: string]: (item: any, index: number) => any };
+  }): MockFixture {
+    const fixture: MockFixture = {
+      name: options.resourceTypes.join('-'),
+      createdAt: new Date().toISOString(),
+      fixedTime: options.fixedTime,
+      resources: {},
+      nextIds: {},
+    };
+
+    for (const type of options.resourceTypes) {
+      const count = options.counts[type] || 0;
+      fixture.resources![type] = [];
+
+      const endpoint = this.findPostEndpointForResource(type);
+      const responseSchema = endpoint
+        ? this.parser.getResponseSchema(endpoint, '201') || this.parser.getResponseSchema(endpoint, '200')
+        : undefined;
+      const typeSchema = this.apiModel.schemas[this.capitalize(type)];
+      const schema = responseSchema || typeSchema;
+
+      for (let i = 0; i < count; i++) {
+        let item: any;
+        if (schema) {
+          item = this.dataGenerator.generate(schema);
+          if (item && typeof item === 'object' && item.data && Array.isArray(item.data) && item.data.length > 0) {
+            item = item.data[0];
+          }
+        } else {
+          item = { id: `${i + 1}` };
+        }
+
+        if (options.overrides && options.overrides[type]) {
+          item = options.overrides[type](item, i);
+        }
+
+        delete item.id;
+
+        if (fixture.fixedTime) {
+          item.createdAt = fixture.fixedTime;
+          item.updatedAt = fixture.fixedTime;
+        }
+
+        fixture.resources![type].push(item);
+      }
+      fixture.nextIds![type] = count + 1;
+    }
+
+    return fixture;
+  }
+
+  saveFixtureToFile(fixture: MockFixture, filePath: string): void {
+    const fs = require('fs');
+    const path = require('path');
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(filePath, JSON.stringify(fixture, null, 2), 'utf-8');
+  }
+
+  loadFixtureFromFile(filePath: string): MockFixture {
+    const fs = require('fs');
+    const content = fs.readFileSync(filePath, 'utf-8');
+    return JSON.parse(content);
+  }
+
+  saveStateToFile(filePath: string, options?: Parameters<MockEngine['exportState']>[0]): void {
+    const data = this.exportState(options);
+    const fs = require('fs');
+    const path = require('path');
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(filePath, data, 'utf-8');
+  }
+
+  loadStateFromFile(filePath: string, options?: Parameters<MockEngine['importState']>[1]): { imported: number; warnings: string[] } {
+    const fs = require('fs');
+    const content = fs.readFileSync(filePath, 'utf-8');
+    return this.importState(content, options);
+  }
+
+  getResourceSnapshot(resourceType?: string): any {
+    if (resourceType) {
+      return JSON.parse(JSON.stringify(this.state.resources[resourceType] || {}));
+    }
+    return JSON.parse(JSON.stringify(this.state.resources));
+  }
+
+  getResourceIds(resourceType: string): string[] {
+    return Object.keys(this.state.resources[resourceType] || {});
+  }
+
+  getResourceCount(resourceType?: string): number {
+    if (resourceType) {
+      return Object.keys(this.state.resources[resourceType] || {}).length;
+    }
+    return Object.keys(this.state.resources).reduce(
+      (sum, k) => sum + Object.keys(this.state.resources[k]).length,
+      0,
+    );
+  }
+
+  private findPostEndpointForResource(resourceType: string): Endpoint | undefined {
+    const pluralType = resourceType.endsWith('s') ? resourceType : `${resourceType}s`;
+    const singularType = resourceType.endsWith('s') ? resourceType.slice(0, -1) : resourceType;
+
+    return this.apiModel.endpoints.find((ep) => {
+      if (ep.method !== 'post') return false;
+      const cleanPath = ep.path.toLowerCase().replace(/\/$/, '');
+      return (
+        cleanPath === `/${pluralType.toLowerCase()}` ||
+        cleanPath === `/${singularType.toLowerCase()}` ||
+        cleanPath.endsWith(`/${pluralType.toLowerCase()}`)
+      );
+    });
+  }
+
+  private capitalize(s: string): string {
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  }
+}
+
+export interface MockStateExport {
+  version: number;
+  exportedAt: string;
+  resources: { [resourceType: string]: { [id: string]: any } };
+  nextIds: { [resourceType: string]: number };
+  meta?: {
+    resourceCount: number;
+    resourceTypes: string[];
+  };
+}
+
+export interface MockFixture {
+  name?: string;
+  description?: string;
+  createdAt?: string;
+  fixedTime?: string;
+  resetBeforeLoad?: boolean;
+  resources?: { [resourceType: string]: any[] };
+  nextIds?: { [resourceType: string]: number };
 }
 
 export function createMockEngine(apiModel: ApiModel, parser: OpenAPIParser): MockEngine {
