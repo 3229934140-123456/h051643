@@ -174,7 +174,40 @@ export class ContractValidator {
     }
   }
 
-  private extractPathParam(paramName: string, path: string): string | undefined {
+  private extractPathParam(paramName: string, actualPath: string): string | undefined {
+    const endpoint = this.findEndpoint(actualPath, 'get' as HttpMethod)
+      || this.findEndpointForAnyMethod(actualPath);
+
+    if (!endpoint) return undefined;
+
+    return this.extractPathParamFromPattern(endpoint.path, actualPath, paramName);
+  }
+
+  private findEndpointForAnyMethod(actualPath: string): Endpoint | undefined {
+    for (const endpoint of this.apiModel.endpoints) {
+      if (this.pathMatches(endpoint.path, actualPath)) {
+        return endpoint;
+      }
+    }
+    return undefined;
+  }
+
+  private extractPathParamFromPattern(pattern: string, actual: string, paramName: string): string | undefined {
+    const patternParts = pattern.split('/').filter((p) => p !== '');
+    const actualParts = actual.split('/').filter((p) => p !== '');
+
+    if (patternParts.length !== actualParts.length) return undefined;
+
+    for (let i = 0; i < patternParts.length; i++) {
+      const patternPart = patternParts[i];
+      if (patternPart.startsWith('{') && patternPart.endsWith('}')) {
+        const name = patternPart.slice(1, -1);
+        if (name === paramName) {
+          return decodeURIComponent(actualParts[i]);
+        }
+      }
+    }
+
     return undefined;
   }
 
@@ -249,16 +282,26 @@ export class ContractValidator {
       });
     }
 
-    if (responseSpec.content && response.body !== undefined && response.body !== null) {
+    if (responseSpec.content) {
       const jsonContent = responseSpec.content['application/json'];
+
       if (jsonContent?.schema) {
-        const result = this.validator.validate(response.body, jsonContent.schema);
-        if (!result.valid) {
-          for (const err of result.errors) {
-            errors.push({
-              ...err,
-              path: `response.body${err.path !== '$' ? err.path.slice(1) : ''}`,
-            });
+        if (response.body === undefined || response.body === null) {
+          errors.push({
+            path: 'response.body',
+            message: 'Response body is empty but JSON schema is defined',
+            expected: 'JSON object matching schema',
+            actual: response.body === null ? 'null' : 'undefined',
+          });
+        } else {
+          const result = this.validator.validate(response.body, jsonContent.schema);
+          if (!result.valid) {
+            for (const err of result.errors) {
+              errors.push({
+                ...err,
+                path: `response.body${err.path !== '$' ? err.path.slice(1) : ''}`,
+              });
+            }
           }
         }
       }

@@ -575,6 +575,159 @@ describe('Contract Validator', () => {
     const results = validator.runContractTest(testCases);
     assert.equal(results.length, 2);
   });
+
+  it('should validate endpoint with path parameters correctly', () => {
+    const request: MockRequest = {
+      path: '/users/550e8400-e29b-41d4-a716-446655440000',
+      method: 'get' as HttpMethod,
+    };
+    const response: MockResponse = {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+      body: {
+        id: '550e8400-e29b-41d4-a716-446655440000',
+        name: 'Test User',
+        email: 'test@example.com',
+        status: 'active',
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      },
+    };
+
+    const result = validator.validateEndpoint(
+      '/users/550e8400-e29b-41d4-a716-446655440000',
+      'get',
+      request,
+      response,
+    );
+    assert.equal(result.valid, true);
+    assert.equal(result.requestErrors.length, 0);
+    assert.equal(result.responseErrors.length, 0);
+  });
+
+  it('should validate path parameter value against schema', () => {
+    const request: MockRequest = {
+      path: '/users/not-a-valid-uuid',
+      method: 'get' as HttpMethod,
+    };
+    const response: MockResponse = {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+      body: {
+        id: 'not-a-valid-uuid',
+        name: 'Test User',
+        email: 'test@example.com',
+        status: 'active',
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      },
+    };
+
+    const result = validator.validateEndpoint(
+      '/users/not-a-valid-uuid',
+      'get',
+      request,
+      response,
+    );
+    assert.equal(result.valid, false);
+    assert.ok(result.requestErrors.length > 0);
+    assert.ok(
+      result.requestErrors.some((e) =>
+        e.message.includes('uuid') || e.path.includes('userId'),
+      ),
+    );
+  });
+
+  it('should report error when response body is null but JSON schema is defined', () => {
+    const request: MockRequest = {
+      path: '/users',
+      method: 'get' as HttpMethod,
+    };
+    const response: MockResponse = {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+      body: null,
+    };
+
+    const result = validator.validateEndpoint('/users', 'get', request, response);
+    assert.equal(result.valid, false);
+    assert.ok(result.responseErrors.length > 0);
+    assert.ok(
+      result.responseErrors.some((e) =>
+        e.message.includes('empty') || e.message.includes('null'),
+      ),
+    );
+  });
+
+  it('should report error when response body is undefined but JSON schema is defined', () => {
+    const request: MockRequest = {
+      path: '/users',
+      method: 'get' as HttpMethod,
+    };
+    const response: MockResponse = {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+      body: undefined,
+    };
+
+    const result = validator.validateEndpoint('/users', 'get', request, response);
+    assert.equal(result.valid, false);
+    assert.ok(result.responseErrors.length > 0);
+    assert.ok(
+      result.responseErrors.some((e) => e.message.includes('empty')),
+    );
+  });
+
+  it('should report all missing required fields clearly', () => {
+    const request: MockRequest = {
+      path: '/users',
+      method: 'get' as HttpMethod,
+    };
+    const response: MockResponse = {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+      body: {
+        data: [
+          {
+            name: 'Only Name',
+          },
+        ],
+      },
+    };
+
+    const result = validator.validateEndpoint('/users', 'get', request, response);
+    assert.equal(result.valid, false);
+    const missingFields = result.responseErrors
+      .filter((e) => e.message.includes('Required property'))
+      .map((e) => e.path);
+    assert.ok(missingFields.length >= 5);
+    assert.ok(missingFields.some((p) => p.includes('total')));
+    assert.ok(missingFields.some((p) => p.includes('page')));
+    assert.ok(missingFields.some((p) => p.includes('pageSize')));
+    assert.ok(missingFields.some((p) => p.includes('email')));
+    assert.ok(missingFields.some((p) => p.includes('id')));
+  });
+
+  it('should report wrong status code clearly', () => {
+    const request: MockRequest = {
+      path: '/users/123',
+      method: 'get' as HttpMethod,
+    };
+    const response: MockResponse = {
+      status: 503,
+      headers: { 'Content-Type': 'application/json' },
+      body: { error: 'service unavailable' },
+    };
+
+    const result = validator.validateEndpoint('/users/123', 'get', request, response);
+    assert.equal(result.valid, false);
+    assert.equal(result.statusCodeMatched, false);
+    assert.ok(
+      result.responseErrors.some((e) =>
+        e.message.includes('Unexpected response status') || e.message.includes('503'),
+      ),
+    );
+  });
 });
 
 describe('Compatibility Checker', () => {
