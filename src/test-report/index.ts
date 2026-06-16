@@ -12,6 +12,8 @@ export interface TestCaseResult {
   requestErrors: ValidationError[];
   responseErrors: ValidationError[];
   durationMs?: number;
+  requestUrl?: string;
+  contentType?: string;
 }
 
 export interface SummaryStats {
@@ -21,7 +23,7 @@ export interface SummaryStats {
   passRate: number;
   totalDurationMs: number;
   byMethod: MethodGroupStats[];
-  byStatusCode: StatusCodeGroupStats[];
+  byRealStatusCode: RealStatusCodeGroupStats[];
   byValidationType: ValidationTypeStats;
   failedEndpointsCount: number;
   totalEndpointsCount: number;
@@ -35,8 +37,8 @@ export interface MethodGroupStats {
   passRate: number;
 }
 
-export interface StatusCodeGroupStats {
-  statusCode: string;
+export interface RealStatusCodeGroupStats {
+  statusCode: number;
   total: number;
   passed: number;
   failed: number;
@@ -60,6 +62,15 @@ export interface EndpointGroupStats {
   testCases: TestCaseResult[];
 }
 
+export type ErrorCategory = 'type' | 'missing' | 'format' | 'enum' | 'range' | 'status' | 'content-type' | 'other';
+
+export interface CategorizedError extends ValidationError {
+  category: ErrorCategory;
+  expected?: any;
+  actual?: any;
+  suggestions?: string[];
+}
+
 export interface FailedCaseDetail {
   testCaseId?: string;
   testCaseName?: string;
@@ -68,10 +79,20 @@ export interface FailedCaseDetail {
   statusCode: number;
   statusCodeMatched: boolean;
   contentTypeMatched: boolean;
-  requestErrors: Array<ValidationError & { suggestions?: string[] }>;
-  responseErrors: Array<ValidationError & { suggestions?: string[] }>;
+  contentType?: string;
+  requestUrl?: string;
+  requestErrors: CategorizedError[];
+  responseErrors: CategorizedError[];
   commonRootCauses: string[];
   durationMs?: number;
+}
+
+export interface FailedCaseFilter {
+  side?: 'request' | 'response' | 'both';
+  statusCode?: number;
+  statusCodeMismatch?: boolean;
+  contentTypeMismatch?: boolean;
+  category?: ErrorCategory;
 }
 
 export interface TestReport {
@@ -79,15 +100,34 @@ export interface TestReport {
   summary: SummaryStats;
   endpoints: EndpointGroupStats[];
   failedDetails: FailedCaseDetail[];
+  filterFailedDetails(filter: FailedCaseFilter): FailedCaseDetail[];
 }
 
 export class TestReportGenerator {
   generateReport(results: TestCaseResult[]): TestReport {
+    const summary = this.buildSummary(results);
+    const endpoints = this.buildEndpointGroups(results);
+    const failedDetails = this.buildFailedDetails(results);
+
     return {
       generatedAt: new Date().toISOString(),
-      summary: this.buildSummary(results),
-      endpoints: this.buildEndpointGroups(results),
-      failedDetails: this.buildFailedDetails(results),
+      summary,
+      endpoints,
+      failedDetails,
+      filterFailedDetails(filter: FailedCaseFilter): FailedCaseDetail[] {
+        return failedDetails.filter((d) => {
+          if (filter.side === 'request' && d.requestErrors.length === 0) return false;
+          if (filter.side === 'response' && d.responseErrors.length === 0) return false;
+          if (filter.statusCode !== undefined && d.statusCode !== filter.statusCode) return false;
+          if (filter.statusCodeMismatch === true && d.statusCodeMatched) return false;
+          if (filter.contentTypeMismatch === true && d.contentTypeMatched) return false;
+          if (filter.category !== undefined) {
+            const allErrors = [...d.requestErrors, ...d.responseErrors];
+            if (!allErrors.some((e) => e.category === filter.category)) return false;
+          }
+          return true;
+        });
+      },
     };
   }
 
@@ -116,16 +156,15 @@ export class TestReportGenerator {
     }
     byMethod.sort((a, b) => a.method.localeCompare(b.method));
 
-    const scMap = new Map<string, TestCaseResult[]>();
+    const scMap = new Map<number, TestCaseResult[]>();
     for (const r of results) {
-      const key = r.statusCodeMatched ? '匹配' : '不匹配';
-      if (!scMap.has(key)) scMap.set(key, []);
-      scMap.get(key)!.push(r);
+      if (!scMap.has(r.statusCode)) scMap.set(r.statusCode, []);
+      scMap.get(r.statusCode)!.push(r);
     }
-    const byStatusCode: StatusCodeGroupStats[] = [];
+    const byRealStatusCode: RealStatusCodeGroupStats[] = [];
     for (const [statusCode, items] of scMap.entries()) {
       const scPassed = items.filter((r) => r.valid).length;
-      byStatusCode.push({
+      byRealStatusCode.push({
         statusCode,
         total: items.length,
         passed: scPassed,
@@ -133,6 +172,7 @@ export class TestReportGenerator {
         passRate: items.length === 0 ? 100 : Math.round((scPassed / items.length) * 10000) / 100,
       });
     }
+    byRealStatusCode.sort((a, b) => a.statusCode - b.statusCode);
 
     const totalWithRequestErrors = results.filter((r) => r.requestErrors.length > 0).length;
     const totalWithResponseErrors = results.filter((r) => r.responseErrors.length > 0).length;
@@ -161,7 +201,7 @@ export class TestReportGenerator {
       passRate,
       totalDurationMs,
       byMethod,
-      byStatusCode,
+      byRealStatusCode,
       byValidationType,
       failedEndpointsCount: failedEndpointKeys.size,
       totalEndpointsCount: endpointKeys.size,
@@ -199,23 +239,19 @@ export class TestReportGenerator {
       .filter((r) => !r.valid)
       .map((r) => {
         const commonRootCauses = this.analyzeRootCauses(r);
-        const requestErrors = r.requestErrors.map((e) => ({
-          ...e,
-          suggestions: this.generateSuggestions(e),
-        }));
-        const responseErrors = r.responseErrors.map((e) => ({
-          ...e,
-          suggestions: this.generateSuggestions(e),
-        }));
+        const requestErrors = r.requestErrors.map((e) => this.categorizeError(e));
+        const responseErrors = r.responseErrors.map((e) => this.categorizeError(e));
 
         return {
-          testCaseId: r.testCaseId,
-          testCaseName: r.testCaseName,
+          testCaseId: r.testCaseId || undefined,
+          testCaseName: r.testCaseName || undefined,
           endpoint: r.endpoint,
           method: r.method,
           statusCode: r.statusCode,
           statusCodeMatched: r.statusCodeMatched,
           contentTypeMatched: r.contentTypeMatched,
+          contentType: r.contentType || undefined,
+          requestUrl: r.requestUrl || undefined,
           requestErrors,
           responseErrors,
           commonRootCauses,
@@ -224,12 +260,41 @@ export class TestReportGenerator {
       });
   }
 
+  private categorizeError(error: ValidationError): CategorizedError {
+    const msg = error.message.toLowerCase();
+    let category: ErrorCategory = 'other';
+
+    if (msg.includes('required') || msg.includes('missing') || msg.includes('is missing')) {
+      category = 'missing';
+    } else if (msg.includes('expected type') || msg.includes('type mismatch') || (msg.includes('type') && !msg.includes('content-type'))) {
+      category = 'type';
+    } else if (msg.includes('format') || msg.includes('uuid') || msg.includes('email') || msg.includes('date') || msg.includes('url')) {
+      category = 'format';
+    } else if (msg.includes('enum') || msg.includes('allowed values') || msg.includes('one of')) {
+      category = 'enum';
+    } else if (msg.includes('minimum') || msg.includes('maximum') || msg.includes('minlength') || msg.includes('maxlength') || msg.includes('range')) {
+      category = 'range';
+    } else if (msg.includes('status') || msg.includes('unexpected response')) {
+      category = 'status';
+    } else if (msg.includes('content-type') || msg.includes('content type')) {
+      category = 'content-type';
+    }
+
+    return {
+      ...error,
+      category,
+      expected: error.expected,
+      actual: error.actual,
+      suggestions: this.generateSuggestions(error, category),
+    };
+  }
+
   private analyzeRootCauses(result: TestCaseResult): string[] {
     const causes: string[] = [];
     const allErrors = [...result.requestErrors, ...result.responseErrors];
 
     const typeErrorCount = allErrors.filter((e) =>
-      e.message.includes('Expected type') || e.message.includes('type')
+      e.message.includes('Expected type') || (e.message.includes('type') && !e.message.includes('content-type'))
     ).length;
     const missingCount = allErrors.filter((e) =>
       e.message.includes('Required') || e.message.includes('Missing') || e.message.includes('missing')
@@ -237,31 +302,49 @@ export class TestReportGenerator {
     const formatCount = allErrors.filter((e) =>
       e.message.includes('format') || e.message.includes('uuid') || e.message.includes('email') || e.message.includes('date')
     ).length;
+    const enumCount = allErrors.filter((e) =>
+      e.message.includes('enum') || e.message.includes('allowed values')
+    ).length;
 
     if (!result.statusCodeMatched) causes.push('接口返回的状态码与契约定义不一致');
     if (!result.contentTypeMatched) causes.push('响应的 Content-Type 与契约声明不匹配');
     if (missingCount > 0) causes.push(`存在 ${missingCount} 处必填字段缺失`);
     if (typeErrorCount > 0) causes.push(`存在 ${typeErrorCount} 处字段类型错误`);
     if (formatCount > 0) causes.push(`存在 ${formatCount} 处数据格式校验失败`);
+    if (enumCount > 0) causes.push(`存在 ${enumCount} 处枚举值不匹配`);
 
     return causes;
   }
 
-  private generateSuggestions(error: ValidationError): string[] {
+  private generateSuggestions(error: ValidationError, category: ErrorCategory): string[] {
     const suggestions: string[] = [];
-    const msg = error.message.toLowerCase();
 
-    if (msg.includes('required') || msg.includes('missing')) {
-      suggestions.push(`检查实际响应中是否缺少字段: "${error.path.split('.').pop()}"`);
-      suggestions.push('确认后端实现是否正确输出了该字段，或检查契约是否应该标记为可选');
-    } else if (msg.includes('expected type')) {
-      suggestions.push(`字段 "${error.path}" 类型不匹配，建议核对服务端序列化逻辑`);
-      suggestions.push('确认前端期望的类型与后端实际返回类型一致');
-    } else if (msg.includes('format') || msg.includes('uuid') || msg.includes('email')) {
-      suggestions.push(`字段 "${error.path}" 的格式不符合契约要求`);
-      suggestions.push('检查数据生成逻辑是否使用了正确的格式规范');
-    } else if (msg.includes('enum') || msg.includes('allowed values')) {
-      suggestions.push(`字段 "${error.path}" 的值不在枚举允许范围内`);
+    switch (category) {
+      case 'missing':
+        suggestions.push(`检查实际响应中是否缺少字段: "${error.path.split('.').pop()}"`);
+        suggestions.push('确认后端实现是否正确输出了该字段，或检查契约是否应该标记为可选');
+        break;
+      case 'type':
+        suggestions.push(`字段 "${error.path}" 类型不匹配，建议核对服务端序列化逻辑`);
+        suggestions.push('确认前端期望的类型与后端实际返回类型一致');
+        break;
+      case 'format':
+        suggestions.push(`字段 "${error.path}" 的格式不符合契约要求`);
+        suggestions.push('检查数据生成逻辑是否使用了正确的格式规范');
+        break;
+      case 'enum':
+        suggestions.push(`字段 "${error.path}" 的值不在枚举允许范围内`);
+        suggestions.push('确认后端返回值是否在契约声明的枚举列表中');
+        break;
+      case 'range':
+        suggestions.push(`字段 "${error.path}" 的值超出约束范围`);
+        break;
+      case 'status':
+        suggestions.push('检查请求路径和参数是否正确，确认后端路由配置');
+        break;
+      case 'content-type':
+        suggestions.push('检查后端是否正确设置 Content-Type 响应头');
+        break;
     }
 
     if (error.path.startsWith('request')) {
@@ -278,31 +361,36 @@ export class TestReportGenerator {
     const s = report.summary;
     const lines: string[] = [];
 
-    lines.push('╔══════════════════════════════════════════════════╗');
-    lines.push('║            📋 契约测试汇总报告                   ║');
-    lines.push('╠══════════════════════════════════════════════════╣');
-    lines.push(`║ 生成时间: ${this.padRight(report.generatedAt, 32)}║`);
-    lines.push(`║ 用例总数: ${this.padRight(String(s.total), 36)}║`);
-    lines.push(`║ ✅ 通过: ${this.padRight(String(s.passed), 38)}║`);
-    lines.push(`║ ❌ 失败: ${this.padRight(String(s.failed), 38)}║`);
-    lines.push(`║ 📊 通过率: ${this.padRight(s.passRate + '%', 36)}║`);
-    lines.push(`║ ⏱  总耗时: ${this.padRight(s.totalDurationMs + 'ms', 34)}║`);
-    lines.push(`║ 🔗 涉及端点: ${this.padRight(`${s.failedEndpointsCount}/${s.totalEndpointsCount} 个失败`, 32)}║`);
-    lines.push('╠══════════════════════════════════════════════════╣');
-    lines.push('║ 按 HTTP 方法 分组:                               ║');
+    lines.push('╔══════════════════════════════════════════════════════════════╗');
+    lines.push('║                  📋 契约测试汇总报告                        ║');
+    lines.push('╠══════════════════════════════════════════════════════════════╣');
+    lines.push(`║ 生成时间:  ${this.padRight(report.generatedAt, 48)}║`);
+    lines.push(`║ 用例总数:  ${this.padRight(String(s.total), 48)}║`);
+    lines.push(`║ ✅ 通过:   ${this.padRight(String(s.passed), 48)}║`);
+    lines.push(`║ ❌ 失败:   ${this.padRight(String(s.failed), 48)}║`);
+    lines.push(`║ 📊 通过率: ${this.padRight(s.passRate + '%', 46)}║`);
+    lines.push(`║ ⏱  总耗时: ${this.padRight(s.totalDurationMs + 'ms', 44)}║`);
+    lines.push('╠══════════════════════════════════════════════════════════════╣');
+    lines.push('║ 按 HTTP 方法 分组:                                          ║');
     for (const m of s.byMethod) {
-      lines.push(`║   ${this.padRight(m.method, 8)} ${this.padRight(`${m.passed}/${m.total}`, 10)} (${m.passRate}%) ${' '.repeat(15)}║`);
+      lines.push(`║   ${this.padRight(m.method, 8)} ${this.padRight(`${m.passed}/${m.total}`, 10)} (${m.passRate}%)${' '.repeat(32)}║`);
     }
-    lines.push('╠══════════════════════════════════════════════════╣');
-    lines.push('║ 校验类型错误分布:                                ║');
-    lines.push(`║   请求参数校验失败: ${this.padRight(String(s.byValidationType.requestValidation.failed), 24)}║`);
-    lines.push(`║   响应体校验失败:  ${this.padRight(String(s.byValidationType.responseValidation.failed), 24)}║`);
-    lines.push(`║   状态码校验失败:  ${this.padRight(String(s.byValidationType.statusCodeValidation.failed), 24)}║`);
-    lines.push(`║   Content-Type:   ${this.padRight(String(s.byValidationType.contentTypeValidation.failed), 24)}║`);
-    lines.push('╚══════════════════════════════════════════════════╝');
+    lines.push('╠══════════════════════════════════════════════════════════════╣');
+    lines.push('║ 按实际状态码 分组:                                          ║');
+    for (const sc of s.byRealStatusCode) {
+      const label = sc.statusCode === 0 ? '0 (网络错误)' : String(sc.statusCode);
+      lines.push(`║   ${this.padRight(label, 12)} ${this.padRight(`${sc.passed}/${sc.total}`, 10)} (${sc.passRate}%)${' '.repeat(28)}║`);
+    }
+    lines.push('╠══════════════════════════════════════════════════════════════╣');
+    lines.push('║ 校验类型错误分布:                                           ║');
+    lines.push(`║   请求参数校验失败: ${this.padRight(String(s.byValidationType.requestValidation.failed), 38)}║`);
+    lines.push(`║   响应体校验失败:   ${this.padRight(String(s.byValidationType.responseValidation.failed), 38)}║`);
+    lines.push(`║   状态码校验失败:   ${this.padRight(String(s.byValidationType.statusCodeValidation.failed), 38)}║`);
+    lines.push(`║   Content-Type:    ${this.padRight(String(s.byValidationType.contentTypeValidation.failed), 38)}║`);
+    lines.push('╚══════════════════════════════════════════════════════════════╝');
 
     lines.push('');
-    lines.push('── 按端点分组详情 ──────────────────────────────────');
+    lines.push('── 按端点分组详情 ──────────────────────────────────────────────');
     for (const g of report.endpoints) {
       const icon = g.failed === 0 ? '✅' : '❌';
       lines.push(`${icon} ${this.padRight(g.method, 6)} ${this.padRight(g.endpoint, 35)} ${g.passed}/${g.total} (${g.passRate}%)`);
@@ -311,7 +399,8 @@ export class TestReportGenerator {
           if (!r.valid || includePassed) {
             const tIcon = r.valid ? '  ✓' : '  ✗';
             const name = r.testCaseName || '(未命名用例)';
-            lines.push(`${tIcon} ${name} [${r.statusCode}] ${r.durationMs || 0}ms`);
+            const urlInfo = r.requestUrl ? ` → ${r.requestUrl}` : '';
+            lines.push(`${tIcon} ${name} [${r.statusCode}] ${r.durationMs || 0}ms${urlInfo}`);
             if (!r.valid) {
               for (const err of r.requestErrors) lines.push(`       📥 [${err.path}] ${err.message}`);
               for (const err of r.responseErrors) lines.push(`       📤 [${err.path}] ${err.message}`);
@@ -323,11 +412,13 @@ export class TestReportGenerator {
 
     if (report.failedDetails.length > 0) {
       lines.push('');
-      lines.push('── 失败用例详细分析 ────────────────────────────────');
+      lines.push('── 失败用例详细分析 ──────────────────────────────────────────');
       for (let i = 0; i < report.failedDetails.length; i++) {
         const d = report.failedDetails[i];
         lines.push(`\n【${i + 1}】${d.testCaseName || '(未命名)'} ${d.method.toUpperCase()} ${d.endpoint}`);
-        lines.push(`    状态码: ${d.statusCode} (${d.statusCodeMatched ? '匹配' : '不匹配'}) | Content-Type: ${d.contentTypeMatched ? '匹配' : '不匹配'}`);
+        lines.push(`    状态码: ${d.statusCode} (${d.statusCodeMatched ? '匹配' : '不匹配'}) | Content-Type: ${d.contentTypeMatched ? '匹配' : '不匹配'}${d.contentType ? ` (${d.contentType})` : ''}`);
+        if (d.requestUrl) lines.push(`    请求地址: ${d.requestUrl}`);
+        if (d.durationMs !== undefined) lines.push(`    耗时: ${d.durationMs}ms`);
         if (d.commonRootCauses.length > 0) {
           lines.push('    🔍 根因分析:');
           for (const cause of d.commonRootCauses) lines.push(`       • ${cause}`);
@@ -335,28 +426,26 @@ export class TestReportGenerator {
         if (d.requestErrors.length > 0) {
           lines.push('    📥 请求校验错误:');
           for (const err of d.requestErrors) {
-            lines.push(`       - 路径: ${err.path}`);
-            lines.push(`         消息: ${err.message}`);
-            if ('actual' in (err as any)) lines.push(`         实际值: ${JSON.stringify((err as any).actual)}`);
-            if ('expected' in (err as any)) lines.push(`         期望值: ${JSON.stringify((err as any).expected)}`);
-            const suggestions = (err as any).suggestions || [];
-            if (suggestions.length > 0) {
+            lines.push(`       - [${err.category}] ${err.path}`);
+            lines.push(`         ${err.message}`);
+            if (err.expected !== undefined) lines.push(`         期望: ${this.truncateValue(err.expected)}`);
+            if (err.actual !== undefined) lines.push(`         实际: ${this.truncateValue(err.actual)}`);
+            if (err.suggestions && err.suggestions.length > 0) {
               lines.push(`         💡 建议:`);
-              for (const sg of suggestions) lines.push(`            ${sg}`);
+              for (const sg of err.suggestions) lines.push(`            ${sg}`);
             }
           }
         }
         if (d.responseErrors.length > 0) {
           lines.push('    📤 响应校验错误:');
           for (const err of d.responseErrors) {
-            lines.push(`       - 路径: ${err.path}`);
-            lines.push(`         消息: ${err.message}`);
-            if ('actual' in (err as any)) lines.push(`         实际值: ${JSON.stringify((err as any).actual)}`);
-            if ('expected' in (err as any)) lines.push(`         期望值: ${JSON.stringify((err as any).expected)}`);
-            const suggestions = (err as any).suggestions || [];
-            if (suggestions.length > 0) {
+            lines.push(`       - [${err.category}] ${err.path}`);
+            lines.push(`         ${err.message}`);
+            if (err.expected !== undefined) lines.push(`         期望: ${this.truncateValue(err.expected)}`);
+            if (err.actual !== undefined) lines.push(`         实际: ${this.truncateValue(err.actual)}`);
+            if (err.suggestions && err.suggestions.length > 0) {
               lines.push(`         💡 建议:`);
-              for (const sg of suggestions) lines.push(`            ${sg}`);
+              for (const sg of err.suggestions) lines.push(`            ${sg}`);
             }
           }
         }
@@ -367,7 +456,10 @@ export class TestReportGenerator {
   }
 
   formatAsJSON(report: TestReport): string {
-    return JSON.stringify(report, null, 2);
+    return JSON.stringify(report, (key, value) => {
+      if (key === 'filterFailedDetails') return undefined;
+      return value;
+    }, 2);
   }
 
   formatAsHTML(report: TestReport, options: { title?: string } = {}): string {
@@ -390,9 +482,27 @@ export class TestReportGenerator {
       })
       .join('');
 
+    const statusCodeRows = s.byRealStatusCode
+      .map((sc) => {
+        const scClass = sc.failed === 0 ? 'pass' : (sc.statusCode >= 400 ? 'fail' : 'warn');
+        const label = sc.statusCode === 0 ? '0 (网络错误)' : String(sc.statusCode);
+        return `
+          <tr class="${scClass}">
+            <td class="num">${this.escapeHtml(label)}</td>
+            <td class="num">${sc.total}</td>
+            <td class="num">${sc.passed}</td>
+            <td class="num">${sc.failed}</td>
+            <td class="num">${sc.passRate}%</td>
+          </tr>`;
+      })
+      .join('');
+
     const failedCasesHtml = report.failedDetails
       .map((d, i) => {
         const errorsHtml = this.renderErrorsForHtml(d);
+        const urlInfo = d.requestUrl ? `<span class="fc-url">${this.escapeHtml(d.requestUrl)}</span>` : '';
+        const durationInfo = d.durationMs !== undefined ? `<span class="fc-duration">${d.durationMs}ms</span>` : '';
+        const ctInfo = d.contentType ? `<span class="fc-ct">${this.escapeHtml(d.contentType)}</span>` : '';
         return `
           <div class="failed-case" id="fc-${i}">
             <div class="failed-header" onclick="toggleFold('fc-body-${i}')">
@@ -400,7 +510,8 @@ export class TestReportGenerator {
               <span class="fc-method method-${d.method.toLowerCase()}">${d.method.toUpperCase()}</span>
               <span class="fc-endpoint">${this.escapeHtml(d.endpoint)}</span>
               <span class="fc-name">${this.escapeHtml(d.testCaseName || '(未命名用例)')}</span>
-              <span class="fc-status ${d.statusCodeMatched ? 'tag-green' : 'tag-red'}">${d.statusCode}</span>
+              <span class="fc-status ${d.statusCodeMatched ? 'tag-green' : 'tag-red'}">${d.statusCode || 'N/A'}</span>
+              ${urlInfo}${durationInfo}${ctInfo}
               <span class="fc-arrow">▼</span>
             </div>
             <div class="failed-body" id="fc-body-${i}">
@@ -415,6 +526,16 @@ export class TestReportGenerator {
       })
       .join('');
 
+    const filterBar = report.failedDetails.length > 0 ? `
+      <div class="filter-bar">
+        <span class="filter-label">过滤:</span>
+        <button class="filter-btn active" onclick="filterFailed('all')">全部</button>
+        <button class="filter-btn" onclick="filterFailed('request')">📥 请求侧</button>
+        <button class="filter-btn" onclick="filterFailed('response')">📤 响应侧</button>
+        <button class="filter-btn" onclick="filterFailed('status')">⚠️ 状态码不匹配</button>
+        <button class="filter-btn" onclick="filterFailed('content-type')">🏷️ Content-Type</button>
+      </div>` : '';
+
     return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -423,7 +544,7 @@ export class TestReportGenerator {
   <style>
     * { box-sizing: border-box; }
     body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; margin: 0; background: #f5f7fa; color: #333; }
-    .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+    .container { max-width: 1280px; margin: 0 auto; padding: 24px; }
     h1 { margin: 0 0 8px; font-size: 24px; }
     .meta { color: #666; font-size: 13px; margin-bottom: 24px; }
     .card { background: #fff; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,.06); padding: 20px; margin-bottom: 20px; }
@@ -445,6 +566,7 @@ export class TestReportGenerator {
     th { background: #f8fafc; font-weight: 600; color: #475569; }
     tr.pass { background: #f0fdf4; }
     tr.fail { background: #fef2f2; }
+    tr.warn { background: #fffbeb; }
     .num { text-align: right; font-family: "SF Mono", Menlo, monospace; }
     .endpoint-cell { font-family: "SF Mono", Menlo, monospace; color: #1e40af; }
     .method-tag { display: inline-block; padding: 3px 10px; border-radius: 4px; font-weight: 700; font-size: 11px; color: #fff; min-width: 52px; text-align: center; }
@@ -456,14 +578,22 @@ export class TestReportGenerator {
     .v-box .count { font-size: 20px; font-weight: 700; margin-top: 4px; }
     .v-box .count.error { color: #dc2626; }
     .v-box .count.ok { color: #16a34a; }
+    .filter-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+    .filter-label { font-weight: 600; color: #475569; font-size: 13px; }
+    .filter-btn { padding: 5px 14px; border-radius: 6px; border: 1px solid #d1d5db; background: #fff; font-size: 12px; cursor: pointer; transition: all .15s; }
+    .filter-btn:hover { background: #e0e7ff; border-color: #818cf8; }
+    .filter-btn.active { background: #3b82f6; color: #fff; border-color: #3b82f6; }
     .failed-case { border: 1px solid #fecaca; border-radius: 8px; margin-bottom: 12px; overflow: hidden; background: #fef2f2; }
-    .failed-header { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; background: #fecaca; }
+    .failed-header { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; background: #fecaca; flex-wrap: wrap; }
     .failed-header:hover { background: #fca5a5; }
     .fc-index { font-weight: 700; color: #991b1b; }
     .fc-method { color: #fff; }
     .fc-endpoint { font-family: "SF Mono", Menlo, monospace; font-weight: 600; color: #7f1d1d; }
-    .fc-name { color: #444; flex: 1; }
+    .fc-name { color: #444; flex: 1; min-width: 60px; }
     .fc-status { padding: 2px 8px; border-radius: 4px; font-weight: 700; font-size: 12px; color: #fff; }
+    .fc-url { font-family: "SF Mono", Menlo, monospace; font-size: 11px; color: #7f1d1d; background: #fee2e2; padding: 2px 6px; border-radius: 3px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .fc-duration { font-size: 11px; color: #64748b; background: #f1f5f9; padding: 2px 6px; border-radius: 3px; }
+    .fc-ct { font-size: 11px; color: #6d28d9; background: #ede9fe; padding: 2px 6px; border-radius: 3px; }
     .tag-green { background: #22c55e; } .tag-red { background: #ef4444; }
     .fc-arrow { color: #7f1d1d; font-size: 11px; }
     .failed-body { padding: 16px 20px; border-top: 1px solid #fecaca; }
@@ -474,15 +604,18 @@ export class TestReportGenerator {
     .err-group .err-group-title { font-weight: 700; color: #991b1b; margin-bottom: 8px; font-size: 13px; }
     .err-item { padding: 8px 0; border-top: 1px dashed #fee2e2; }
     .err-item:first-child { border-top: none; }
+    .err-category { display: inline-block; padding: 1px 8px; border-radius: 3px; font-size: 10px; font-weight: 700; color: #fff; margin-right: 6px; }
+    .cat-type { background: #8b5cf6; } .cat-missing { background: #ef4444; } .cat-format { background: #f59e0b; } .cat-enum { background: #3b82f6; } .cat-range { background: #64748b; } .cat-status { background: #dc2626; } .cat-content-type { background: #d97706; } .cat-other { background: #9ca3af; }
     .err-path { font-family: "SF Mono", Menlo, monospace; color: #7c2d12; font-weight: 600; font-size: 13px; margin-bottom: 4px; }
     .err-msg { color: #444; font-size: 13px; margin-bottom: 6px; }
     .err-kv { display: grid; grid-template-columns: 80px 1fr; gap: 4px; font-size: 12px; margin: 4px 0; }
     .err-kv .k { color: #64748b; font-weight: 600; }
-    .err-kv .v { font-family: "SF Mono", Menlo, monospace; background: #fef3c7; padding: 2px 6px; border-radius: 3px; color: #92400e; }
+    .err-kv .v { font-family: "SF Mono", Menlo, monospace; background: #fef3c7; padding: 2px 6px; border-radius: 3px; color: #92400e; word-break: break-all; }
     .suggestions { background: #eff6ff; border-radius: 4px; padding: 8px 12px; margin-top: 8px; }
     .suggestions .s-title { font-size: 12px; color: #1e40af; font-weight: 600; margin-bottom: 4px; }
     .suggestions ul { margin: 0; padding-left: 18px; }
     .suggestions li { color: #1e3a8a; font-size: 12px; margin: 2px 0; }
+    .hidden { display: none !important; }
   </style>
 </head>
 <body>
@@ -507,6 +640,14 @@ export class TestReportGenerator {
     </div>
 
     <div class="card">
+      <h2>🔢 按实际状态码分组</h2>
+      <table>
+        <thead><tr><th class="num">状态码</th><th class="num">总数</th><th class="num">通过</th><th class="num">失败</th><th class="num">通过率</th></tr></thead>
+        <tbody>${statusCodeRows}</tbody>
+      </table>
+    </div>
+
+    <div class="card">
       <h2>🔌 按端点分组</h2>
       <table>
         <thead><tr><th>方法</th><th>端点</th><th class="num">总数</th><th class="num">通过</th><th class="num">失败</th><th class="num">通过率</th></tr></thead>
@@ -516,7 +657,7 @@ export class TestReportGenerator {
 
     <div class="card">
       <h2>❌ 失败用例详细分析 <span style="font-size:13px;color:#666;">(${report.failedDetails.length} 个)</span></h2>
-      ${report.failedDetails.length === 0 ? '<p style="color:#16a34a;">🎉 所有用例均通过校验，干得漂亮！</p>' : failedCasesHtml}
+      ${report.failedDetails.length === 0 ? '<p style="color:#16a34a;">🎉 所有用例均通过校验，干得漂亮！</p>' : `${filterBar}${failedCasesHtml}`}
     </div>
   </div>
 
@@ -524,6 +665,27 @@ export class TestReportGenerator {
     function toggleFold(id) {
       const el = document.getElementById(id);
       if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+    }
+
+    function filterFailed(type) {
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      event.target.classList.add('active');
+      document.querySelectorAll('.failed-case').forEach(fc => {
+        fc.classList.remove('hidden');
+        if (type === 'all') return;
+        const hasReqErr = fc.querySelector('.err-group-title')?.textContent?.includes('请求');
+        const hasRespErr = fc.querySelector('.err-group-title')?.textContent?.includes('响应');
+        const header = fc.querySelector('.failed-header');
+        const statusTag = header?.querySelector('.fc-status');
+        const isStatusMismatch = statusTag?.classList.contains('tag-red');
+        if (type === 'request' && !hasReqErr) fc.classList.add('hidden');
+        if (type === 'response' && !hasRespErr) fc.classList.add('hidden');
+        if (type === 'status' && !isStatusMismatch) fc.classList.add('hidden');
+        if (type === 'content-type') {
+          const ctItems = fc.querySelectorAll('.err-category.cat-content-type');
+          if (ctItems.length === 0) fc.classList.add('hidden');
+        }
+      });
     }
   </script>
 </body>
@@ -549,20 +711,31 @@ export class TestReportGenerator {
     return blocks.join('');
   }
 
-  private renderErrorItem(e: any): string {
-    const actual = 'actual' in e ? `<div class="err-kv"><span class="k">实际值</span><span class="v">${this.escapeHtml(JSON.stringify(e.actual))}</span></div>` : '';
-    const expected = 'expected' in e ? `<div class="err-kv"><span class="k">期望值</span><span class="v">${this.escapeHtml(JSON.stringify(e.expected))}</span></div>` : '';
+  private renderErrorItem(e: CategorizedError): string {
+    const catClass = `cat-${e.category}`;
+    const catLabel = {
+      type: '类型', missing: '缺失', format: '格式', enum: '枚举',
+      range: '范围', status: '状态码', 'content-type': 'CT', other: '其他',
+    }[e.category] || '其他';
+    const actual = e.actual !== undefined ? `<div class="err-kv"><span class="k">实际值</span><span class="v">${this.escapeHtml(this.truncateValue(e.actual))}</span></div>` : '';
+    const expected = e.expected !== undefined ? `<div class="err-kv"><span class="k">期望值</span><span class="v">${this.escapeHtml(this.truncateValue(e.expected))}</span></div>` : '';
     const suggestions = e.suggestions && e.suggestions.length > 0
       ? `<div class="suggestions">
           <div class="s-title">💡 修复建议</div>
-          <ul>${e.suggestions.map((s: string) => `<li>${this.escapeHtml(s)}</li>`).join('')}</ul>
+          <ul>${e.suggestions.map((s) => `<li>${this.escapeHtml(s)}</li>`).join('')}</ul>
         </div>`
       : '';
     return `<div class="err-item">
-      <div class="err-path">${this.escapeHtml(e.path)}</div>
+      <div class="err-path"><span class="err-category ${catClass}">${catLabel}</span>${this.escapeHtml(e.path)}</div>
       <div class="err-msg">${this.escapeHtml(e.message)}</div>
       ${actual}${expected}${suggestions}
     </div>`;
+  }
+
+  private truncateValue(v: any): string {
+    const s = typeof v === 'string' ? v : JSON.stringify(v);
+    if (s.length > 120) return s.substring(0, 117) + '...';
+    return s;
   }
 
   private padRight(s: string, n: number): string {

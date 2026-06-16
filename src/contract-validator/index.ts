@@ -166,12 +166,21 @@ export class ContractValidator {
       case 'path':
         return this.extractPathParam(param.name, request.path);
       case 'header':
-        return request.headers?.[param.name.toLowerCase()];
+        return this.getHeaderValue(param.name, request.headers);
       case 'cookie':
         return undefined;
       default:
         return undefined;
     }
+  }
+
+  private getHeaderValue(headerName: string, headers: { [key: string]: any } | undefined): any {
+    if (!headers) return undefined;
+    const lowerName = headerName.toLowerCase();
+    for (const [key, value] of Object.entries(headers)) {
+      if (key.toLowerCase() === lowerName) return value;
+    }
+    return undefined;
   }
 
   private extractPathParam(paramName: string, actualPath: string): string | undefined {

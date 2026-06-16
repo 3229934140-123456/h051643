@@ -19,13 +19,22 @@ export {
   formatReport,
   TestReport,
   TestCaseResult,
+  FailedCaseDetail,
+  CategorizedError,
+  ErrorCategory,
+  FailedCaseFilter,
+  RealStatusCodeGroupStats,
 } from './test-report';
 export {
   LiveContractTester,
   runLiveContractTests,
+  runCITestSuite,
   ContractTestCase,
   LiveTestConfig,
   LiveTestResult,
+  LiveTestOutputOptions,
+  TestSuiteFile,
+  CIJsonOutput,
 } from './live-tester';
 
 export * from './types';

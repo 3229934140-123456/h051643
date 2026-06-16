@@ -1232,3 +1232,242 @@ describe('Compatibility Checker - CI Enhanced', () => {
     assert.ok(result.classification.addedFields.length >= 1);
   });
 });
+
+describe('Test Report - Real Status Code Grouping', () => {
+  it('should group by real HTTP status codes', () => {
+    const { TestReportGenerator } = require('../test-report');
+    const generator = new TestReportGenerator();
+
+    const results: any[] = [
+      { endpoint: '/users', method: 'get', valid: true, statusCode: 200, requestErrors: [], responseErrors: [], statusCodeMatched: true, contentTypeMatched: true },
+      { endpoint: '/users', method: 'post', valid: true, statusCode: 201, requestErrors: [], responseErrors: [], statusCodeMatched: true, contentTypeMatched: true },
+      { endpoint: '/users/999', method: 'get', valid: false, statusCode: 404, requestErrors: [], responseErrors: [{ path: '$', message: 'Not found' }], statusCodeMatched: true, contentTypeMatched: true },
+      { endpoint: '/users', method: 'post', valid: false, statusCode: 500, requestErrors: [], responseErrors: [{ path: '$', message: 'Server error' }], statusCodeMatched: true, contentTypeMatched: true },
+    ];
+
+    const report = generator.generateReport(results);
+
+    assert.ok(report.summary.byRealStatusCode);
+    const sc200 = report.summary.byRealStatusCode.find((g: any) => g.statusCode === 200);
+    assert.ok(sc200);
+    assert.equal(sc200.passed, 1);
+
+    const sc404 = report.summary.byRealStatusCode.find((g: any) => g.statusCode === 404);
+    assert.ok(sc404);
+    assert.equal(sc404.failed, 1);
+
+    const sc500 = report.summary.byRealStatusCode.find((g: any) => g.statusCode === 500);
+    assert.ok(sc500);
+    assert.equal(sc500.failed, 1);
+  });
+
+  it('should include requestUrl and contentType in failed details', () => {
+    const { TestReportGenerator } = require('../test-report');
+    const generator = new TestReportGenerator();
+
+    const results: any[] = [
+      {
+        testCaseName: 'TC1',
+        endpoint: '/users/123',
+        method: 'get',
+        valid: false,
+        statusCode: 200,
+        requestErrors: [],
+        responseErrors: [{ path: 'response.body.name', message: 'Required property "name" is missing', expected: 'string', actual: null }],
+        statusCodeMatched: true,
+        contentTypeMatched: false,
+        requestUrl: 'https://api.example.com/users/123',
+        contentType: 'text/html',
+      },
+    ];
+
+    const report = generator.generateReport(results);
+    assert.equal(report.failedDetails.length, 1);
+    assert.equal(report.failedDetails[0].requestUrl, 'https://api.example.com/users/123');
+    assert.equal(report.failedDetails[0].contentType, 'text/html');
+  });
+
+  it('should show real status codes in text report', () => {
+    const { TestReportGenerator } = require('../test-report');
+    const generator = new TestReportGenerator();
+
+    const results: any[] = [
+      { endpoint: '/users', method: 'get', valid: true, statusCode: 200, requestErrors: [], responseErrors: [], statusCodeMatched: true, contentTypeMatched: true },
+      { endpoint: '/bad', method: 'get', valid: false, statusCode: 500, requestErrors: [], responseErrors: [{ path: '$', message: 'err' }], statusCodeMatched: true, contentTypeMatched: true },
+    ];
+
+    const report = generator.generateReport(results);
+    const text = generator.formatAsText(report);
+
+    assert.ok(text.includes('按实际状态码'));
+    assert.ok(text.includes('200'));
+    assert.ok(text.includes('500'));
+  });
+});
+
+describe('Test Report - Error Categorization and Filtering', () => {
+  it('should categorize errors by type', () => {
+    const { TestReportGenerator } = require('../test-report');
+    const generator = new TestReportGenerator();
+
+    const results: any[] = [
+      {
+        endpoint: '/users', method: 'post', valid: false, statusCode: 200,
+        requestErrors: [],
+        responseErrors: [
+          { path: 'r1', message: 'Required property "email" is missing', expected: 'string', actual: null },
+          { path: 'r2', message: 'Expected type string but got number', expected: 'string', actual: 42 },
+          { path: 'r3', message: 'Invalid format: uuid', expected: 'uuid', actual: 'abc' },
+          { path: 'r4', message: 'Value not in enum allowed values', expected: '["a","b"]', actual: 'c' },
+        ],
+        statusCodeMatched: true, contentTypeMatched: true,
+      },
+    ];
+
+    const report = generator.generateReport(results);
+    const d = report.failedDetails[0];
+
+    assert.equal(d.responseErrors[0].category, 'missing');
+    assert.equal(d.responseErrors[1].category, 'type');
+    assert.equal(d.responseErrors[2].category, 'format');
+    assert.equal(d.responseErrors[3].category, 'enum');
+  });
+
+  it('should filter failed details by request side', () => {
+    const { TestReportGenerator } = require('../test-report');
+    const generator = new TestReportGenerator();
+
+    const results: any[] = [
+      { endpoint: '/a', method: 'get', valid: false, statusCode: 200, requestErrors: [{ path: 'p', message: 'err' }], responseErrors: [], statusCodeMatched: true, contentTypeMatched: true },
+      { endpoint: '/b', method: 'get', valid: false, statusCode: 200, requestErrors: [], responseErrors: [{ path: 'p', message: 'err' }], statusCodeMatched: true, contentTypeMatched: true },
+    ];
+
+    const report = generator.generateReport(results);
+    const requestSide = report.filterFailedDetails({ side: 'request' });
+    assert.equal(requestSide.length, 1);
+
+    const responseSide = report.filterFailedDetails({ side: 'response' });
+    assert.equal(responseSide.length, 1);
+  });
+
+  it('should filter by status code mismatch', () => {
+    const { TestReportGenerator } = require('../test-report');
+    const generator = new TestReportGenerator();
+
+    const results: any[] = [
+      { endpoint: '/a', method: 'get', valid: false, statusCode: 500, requestErrors: [], responseErrors: [{ path: '$', message: 'Unexpected response status code: 500' }], statusCodeMatched: false, contentTypeMatched: true },
+      { endpoint: '/b', method: 'get', valid: false, statusCode: 200, requestErrors: [], responseErrors: [{ path: 'r', message: 'Missing' }], statusCodeMatched: true, contentTypeMatched: true },
+    ];
+
+    const report = generator.generateReport(results);
+    const mismatched = report.filterFailedDetails({ statusCodeMismatch: true });
+    assert.equal(mismatched.length, 1);
+    assert.equal(mismatched[0].endpoint, '/a');
+  });
+
+  it('should filter by error category', () => {
+    const { TestReportGenerator } = require('../test-report');
+    const generator = new TestReportGenerator();
+
+    const results: any[] = [
+      { endpoint: '/a', method: 'get', valid: false, statusCode: 200, requestErrors: [], responseErrors: [{ path: 'r1', message: 'Required property missing' }], statusCodeMatched: true, contentTypeMatched: true },
+      { endpoint: '/b', method: 'get', valid: false, statusCode: 200, requestErrors: [], responseErrors: [{ path: 'r2', message: 'Expected type string' }], statusCodeMatched: true, contentTypeMatched: true },
+    ];
+
+    const report = generator.generateReport(results);
+    const missingOnly = report.filterFailedDetails({ category: 'missing' });
+    assert.equal(missingOnly.length, 1);
+
+    const typeOnly = report.filterFailedDetails({ category: 'type' });
+    assert.equal(typeOnly.length, 1);
+  });
+});
+
+describe('Contract Validator - Header Case Insensitivity', () => {
+  it('should match headers case-insensitively', () => {
+    const parser = new OpenAPIParser(sampleSpecV1);
+    const apiModel = parser.parse();
+    const validator = new ContractValidator(apiModel, parser);
+
+    const request: any = {
+      path: '/users',
+      method: 'get' as HttpMethod,
+      headers: { 'X-Request-ID': 'abc-123', 'Authorization': 'Bearer token' },
+      query: {},
+    };
+    const response: any = {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+      body: { data: [], total: 0, page: 1, pageSize: 10 },
+    };
+
+    const result = validator.validateEndpoint('/users', 'get', request, response);
+    assert.ok(result.valid);
+  });
+});
+
+describe('Live Tester - Env Var Substitution', () => {
+  it('should substitute env vars in suite and test cases', () => {
+    const parser = new OpenAPIParser(sampleSpecV1);
+    const apiModel = parser.parse();
+    const validator = new ContractValidator(apiModel, parser);
+
+    process.env.TEST_API_HOST = 'localhost';
+    process.env.TEST_API_PORT = '9876';
+    process.env.TEST_USER_ID = '42';
+
+    try {
+      const { LiveContractTester: LCT } = require('../live-tester');
+      const tester = new LCT({ baseUrl: 'http://${TEST_API_HOST}:${TEST_API_PORT}' }, validator);
+
+      const suite: any = {
+        baseUrl: 'http://${TEST_API_HOST}:${TEST_API_PORT}',
+        testCases: [
+          { path: '/users/${TEST_USER_ID}', method: 'get', name: '获取用户' },
+        ],
+      };
+
+      assert.ok(tester);
+      assert.ok(typeof tester.runTestSuite === 'function');
+    } finally {
+      delete process.env.TEST_API_HOST;
+      delete process.env.TEST_API_PORT;
+      delete process.env.TEST_USER_ID;
+    }
+  });
+
+  it('should generate CI JSON output', () => {
+    const parser = new OpenAPIParser(sampleSpecV1);
+    const apiModel = parser.parse();
+    const validator = new ContractValidator(apiModel, parser);
+
+    const { LiveContractTester: LCT } = require('../live-tester');
+    const tester = new LCT({ baseUrl: 'http://localhost:3000' }, validator);
+
+    const results: any[] = [
+      {
+        report: {
+          generatedAt: new Date().toISOString(),
+          summary: { total: 2, passed: 1, failed: 1, passRate: 50, totalDurationMs: 200, byRealStatusCode: [], byMethod: [], byValidationType: { requestValidation: { total: 2, failed: 0 }, responseValidation: { total: 2, failed: 1 }, statusCodeValidation: { total: 2, failed: 0 }, contentTypeValidation: { total: 2, failed: 0 } }, failedEndpointsCount: 1, totalEndpointsCount: 2 },
+          endpoints: [],
+          failedDetails: [],
+          filterFailedDetails: () => [],
+        },
+        results: [
+          { endpoint: '/users', method: 'get', valid: true, statusCode: 200, statusCodeMatched: true, contentTypeMatched: true, requestErrors: [], responseErrors: [], durationMs: 100, requestUrl: 'http://localhost:3000/users' },
+          { endpoint: '/users', method: 'post', valid: false, statusCode: 400, statusCodeMatched: true, contentTypeMatched: true, requestErrors: [], responseErrors: [{ path: 'r1', message: 'Missing required field', expected: 'string', actual: null }], durationMs: 100, requestUrl: 'http://localhost:3000/users' },
+        ],
+        rawResponses: [],
+      },
+    ];
+
+    const ciOutput = tester.generateCIJsonOutput(results[0], 'http://localhost:3000');
+    assert.equal(ciOutput.version, '1.0');
+    assert.equal(ciOutput.exitCode, 1);
+    assert.equal(ciOutput.summary.total, 2);
+    assert.equal(ciOutput.summary.passed, 1);
+    assert.equal(ciOutput.results[1].errors.length, 1);
+    assert.equal(ciOutput.results[1].errors[0].side, 'response');
+    assert.equal(ciOutput.results[1].errors[0].category, 'missing');
+  });
+});
