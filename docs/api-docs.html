@@ -1,0 +1,2735 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>用户管理 API</title>
+  <style>
+    
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        background: #f5f7fa;
+        color: #333;
+        line-height: 1.6;
+      }
+      .container {
+        display: grid;
+        grid-template-columns: 280px 1fr;
+        grid-template-rows: auto 1fr;
+        min-height: 100vh;
+      }
+      .header {
+        grid-column: 1 / -1;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 30px 40px;
+      }
+      .header h1 { font-size: 28px; margin-bottom: 8px; }
+      .header .version { opacity: 0.9; font-size: 14px; }
+      .header .description { margin-top: 10px; opacity: 0.85; }
+
+      .sidebar {
+        background: #fff;
+        border-right: 1px solid #e0e0e0;
+        padding: 20px 0;
+        position: sticky;
+        top: 0;
+        height: 100vh;
+        overflow-y: auto;
+      }
+      .sidebar h3 { padding: 0 20px 15px; color: #555; font-size: 14px; text-transform: uppercase; }
+      .tag-list { list-style: none; }
+      .tag-header {
+        padding: 10px 20px;
+        cursor: pointer;
+        font-weight: 600;
+        color: #333;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .tag-header:hover { background: #f0f2f5; }
+      .tag-arrow { font-size: 10px; transition: transform 0.2s; }
+      .endpoint-list { list-style: none; }
+      .endpoint-item {
+        padding: 8px 20px 8px 40px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 13px;
+      }
+      .endpoint-item:hover { background: #f0f2f5; }
+
+      .content {
+        padding: 30px;
+        max-width: 900px;
+      }
+      .tag-section { margin-bottom: 40px; }
+      .tag-section h2 {
+        margin-bottom: 20px;
+        color: #2c3e50;
+        border-bottom: 2px solid #667eea;
+        padding-bottom: 8px;
+      }
+      .tag-description { color: #666; margin-bottom: 20px; }
+
+      .endpoint-card {
+        background: #fff;
+        border-radius: 8px;
+        margin-bottom: 16px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        overflow: hidden;
+      }
+      .endpoint-header {
+        padding: 16px 20px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        cursor: pointer;
+      }
+      .method-badge {
+        display: inline-block;
+        padding: 4px 12px;
+        border-radius: 4px;
+        color: white;
+        font-weight: 700;
+        font-size: 12px;
+        text-transform: uppercase;
+        min-width: 65px;
+        text-align: center;
+      }
+      .method-get { background: #61affe; }
+      .method-post { background: #49cc90; }
+      .method-put { background: #fca130; }
+      .method-delete { background: #f93e3e; }
+      .method-patch { background: #50e3c2; }
+
+      .endpoint-path { font-family: 'Monaco', 'Consolas', monospace; font-size: 14px; flex: 1; }
+      .expand-btn {
+        padding: 6px 16px;
+        border: 1px solid #ddd;
+        background: #fff;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 12px;
+      }
+      .expand-btn:hover { background: #f5f5f5; }
+
+      .endpoint-summary { padding: 0 20px 12px; color: #666; font-size: 14px; }
+      .endpoint-details { padding: 0 20px 20px; }
+      .endpoint-description { margin-bottom: 20px; color: #555; }
+
+      .parameters-section, .request-body-section, .responses-section, .try-section {
+        margin-bottom: 20px;
+      }
+      .parameters-section h4, .request-body-section h4, .responses-section h4, .try-section h4 {
+        margin-bottom: 12px;
+        color: #333;
+        font-size: 15px;
+      }
+
+      .param-group { margin-bottom: 16px; }
+      .param-group h5 { color: #666; font-size: 13px; margin-bottom: 8px; }
+      .param-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+      .param-table th, .param-table td {
+        text-align: left;
+        padding: 8px 12px;
+        border-bottom: 1px solid #eee;
+      }
+      .param-table th { background: #f8f9fa; font-weight: 600; }
+      .param-name { font-family: monospace; font-weight: 500; }
+      .param-type { color: #667eea; font-family: monospace; }
+
+      .required-badge {
+        display: inline-block;
+        padding: 2px 6px;
+        background: #ffebee;
+        color: #c62828;
+        border-radius: 3px;
+        font-size: 11px;
+        font-weight: 600;
+      }
+
+      .response-item { margin-bottom: 10px; border: 1px solid #eee; border-radius: 6px; }
+      .response-header {
+        padding: 10px 14px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        background: #fafafa;
+      }
+      .status-code {
+        font-weight: 700;
+        font-family: monospace;
+        padding: 2px 8px;
+        border-radius: 3px;
+        font-size: 13px;
+      }
+      .status-success { background: #e8f5e9; color: #2e7d32; }
+      .status-error { background: #ffebee; color: #c62828; }
+      .status-redirect { background: #fff3e0; color: #e65100; }
+      .status-default { background: #f5f5f5; color: #666; }
+      .response-desc { flex: 1; font-size: 13px; color: #555; }
+      .toggle-arrow { font-size: 10px; color: #999; }
+      .response-content { padding: 14px; }
+
+      .schema-preview {
+        background: #f8f9fa;
+        border-radius: 6px;
+        padding: 12px;
+        font-size: 13px;
+        font-family: 'Monaco', 'Consolas', monospace;
+      }
+      .schema-type { color: #667eea; font-weight: 500; }
+      .schema-keyword { color: #e91e63; font-weight: 500; }
+      .schema-property { margin-left: 20px; padding: 4px 0; }
+      .prop-name { color: #2c3e50; font-weight: 500; }
+      .prop-name.required::after { content: ' *'; color: #f44336; }
+      .prop-type { color: #667eea; margin-left: 10px; font-size: 12px; }
+      .prop-desc { color: #888; margin-left: 10px; font-size: 12px; }
+      .schema-properties { margin-left: 20px; }
+      .schema-items { margin-left: 20px; }
+
+      .example-box { margin-top: 12px; }
+      .example-box h6 { margin-bottom: 8px; color: #555; font-size: 12px; text-transform: uppercase; }
+      .code-block {
+        background: #1e293b;
+        color: #e2e8f0;
+        padding: 16px;
+        border-radius: 6px;
+        overflow-x: auto;
+        font-family: 'Monaco', 'Consolas', monospace;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+
+      .example-tabs { display: flex; gap: 4px; margin-bottom: 10px; }
+      .tab-btn {
+        padding: 6px 14px;
+        border: 1px solid #ddd;
+        background: #f5f5f5;
+        border-radius: 4px 4px 0 0;
+        cursor: pointer;
+        font-size: 12px;
+      }
+      .tab-btn.active {
+        background: #fff;
+        border-bottom-color: #fff;
+        font-weight: 600;
+      }
+      .tab-content { background: #fff; }
+
+      .schemas-section { margin-top: 40px; }
+      .schemas-section h2 {
+        margin-bottom: 20px;
+        color: #2c3e50;
+        border-bottom: 2px solid #667eea;
+        padding-bottom: 8px;
+      }
+      .schema-card {
+        background: #fff;
+        border-radius: 8px;
+        margin-bottom: 16px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        padding: 20px;
+      }
+      .schema-name { color: #333; font-size: 16px; margin-bottom: 12px; }
+
+      @media (max-width: 768px) {
+        .container { grid-template-columns: 1fr; }
+        .sidebar { display: none; }
+        .content { padding: 20px; }
+      }
+    
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <h1>用户管理 API</h1>
+      <p class="version">Version: 1.0.0</p>
+      <p class="description">用户管理系统的 RESTful API 接口</p>
+    </header>
+
+    <nav class="sidebar">
+      <h3>API 目录</h3>
+      <ul class="tag-list">
+        
+          <li>
+            <div class="tag-header" onclick="toggleTag('用户管理')">
+              <span class="tag-arrow">▼</span>
+              <span>用户管理</span>
+            </div>
+            <ul class="endpoint-list" id="list-用户管理">
+              
+                <li class="endpoint-item" onclick="scrollToEndpoint('ep-get--users')">
+                  <span class="method-badge method-get">GET</span>
+                  <span class="endpoint-path">/users</span>
+                </li>
+              
+                <li class="endpoint-item" onclick="scrollToEndpoint('ep-post--users')">
+                  <span class="method-badge method-post">POST</span>
+                  <span class="endpoint-path">/users</span>
+                </li>
+              
+                <li class="endpoint-item" onclick="scrollToEndpoint('ep-get--users-userId')">
+                  <span class="method-badge method-get">GET</span>
+                  <span class="endpoint-path">/users/{userId}</span>
+                </li>
+              
+                <li class="endpoint-item" onclick="scrollToEndpoint('ep-put--users-userId')">
+                  <span class="method-badge method-put">PUT</span>
+                  <span class="endpoint-path">/users/{userId}</span>
+                </li>
+              
+                <li class="endpoint-item" onclick="scrollToEndpoint('ep-delete--users-userId')">
+                  <span class="method-badge method-delete">DELETE</span>
+                  <span class="endpoint-path">/users/{userId}</span>
+                </li>
+              
+                <li class="endpoint-item" onclick="scrollToEndpoint('ep-get--users-userId-orders')">
+                  <span class="method-badge method-get">GET</span>
+                  <span class="endpoint-path">/users/{userId}/orders</span>
+                </li>
+              
+            </ul>
+          </li>
+        
+          <li>
+            <div class="tag-header" onclick="toggleTag('订单管理')">
+              <span class="tag-arrow">▼</span>
+              <span>订单管理</span>
+            </div>
+            <ul class="endpoint-list" id="list-订单管理">
+              
+                <li class="endpoint-item" onclick="scrollToEndpoint('ep-get--users-userId-orders')">
+                  <span class="method-badge method-get">GET</span>
+                  <span class="endpoint-path">/users/{userId}/orders</span>
+                </li>
+              
+                <li class="endpoint-item" onclick="scrollToEndpoint('ep-post--orders')">
+                  <span class="method-badge method-post">POST</span>
+                  <span class="endpoint-path">/orders</span>
+                </li>
+              
+            </ul>
+          </li>
+        
+      </ul>
+    </nav>
+
+    <main class="content">
+      
+        <section class="tag-section" id="tag-用户管理">
+          <h2>用户管理</h2>
+          <p class="tag-description">用户的增删改查操作</p>
+          
+      <div class="endpoint-card" id="ep-get--users">
+        <div class="endpoint-header">
+          <span class="method-badge method-get">GET</span>
+          <span class="endpoint-path">/users</span>
+          <button class="expand-btn" onclick="toggleEndpoint('ep-get--users')">展开</button>
+        </div>
+        <div class="endpoint-summary">获取用户列表</div>
+
+        <div class="endpoint-details" id="details-ep-get--users" style="display:none;">
+          <p class="endpoint-description">分页获取所有用户列表</p>
+
+          
+          <div class="parameters-section">
+            <h4>参数</h4>
+            
+      <div class="param-group">
+        <h5>Query 参数</h5>
+        <table class="param-table">
+          <thead>
+            <tr>
+              <th>名称</th>
+              <th>类型</th>
+              <th>必填</th>
+              <th>描述</th>
+            </tr>
+          </thead>
+          <tbody>
+            
+              <tr>
+                <td class="param-name">page</td>
+                <td class="param-type">integer</td>
+                <td>否</td>
+                <td>页码</td>
+              </tr>
+            
+              <tr>
+                <td class="param-name">pageSize</td>
+                <td class="param-type">integer</td>
+                <td>否</td>
+                <td>每页数量</td>
+              </tr>
+            
+              <tr>
+                <td class="param-name">status</td>
+                <td class="param-type">string</td>
+                <td>否</td>
+                <td>用户状态筛选</td>
+              </tr>
+            
+          </tbody>
+        </table>
+      </div>
+    
+          </div>
+          
+
+          
+
+          <div class="responses-section">
+            <h4>响应</h4>
+            
+      <div class="response-item">
+        <div class="response-header" onclick="toggleResponse('/users-200')">
+          <span class="status-code status-success">200</span>
+          <span class="response-desc">成功返回用户列表</span>
+          <span class="toggle-arrow">▼</span>
+        </div>
+        <div class="response-content" id="resp-/users-200" style="display:none;">
+          <div class="schema-preview">
+                   <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name required">data</span>
+              <span class="prop-type">object[]</span>
+              
+              <div class="schema-array">
+        <span class="schema-type">array</span>
+        <div class="schema-items">
+          <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name required">id</span>
+              <span class="prop-type">string (uuid)</span>
+              <span class="prop-desc">用户唯一标识</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">name</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">用户名称</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">email</span>
+              <span class="prop-type">string (email)</span>
+              <span class="prop-desc">邮箱地址</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">status</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">用户状态</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">createdAt</span>
+              <span class="prop-type">string (date-time)</span>
+              <span class="prop-desc">创建时间</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">updatedAt</span>
+              <span class="prop-type">string (date-time)</span>
+              <span class="prop-desc">更新时间</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">profile</span>
+              <span class="prop-type">object</span>
+              <span class="prop-desc">用户资料</span>
+              <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name ">age</span>
+              <span class="prop-type">integer</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">phone</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">address</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+        </div>
+      </div>
+            </div>
+          
+        </div>
+      </div>
+        </div>
+      </div>
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">total</span>
+              <span class="prop-type">integer</span>
+              <span class="prop-desc">总记录数</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">page</span>
+              <span class="prop-type">integer</span>
+              <span class="prop-desc">当前页码</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">pageSize</span>
+              <span class="prop-type">integer</span>
+              <span class="prop-desc">每页数量</span>
+              
+            </div>
+          
+        </div>
+      </div>
+                 </div>
+          <div class="example-box">
+                   <h6>响应示例</h6>
+                   <pre class="code-block">{
+  &quot;data&quot;: [
+    {
+      &quot;id&quot;: &quot;dfc8b90b-cb5b-4ffe-a2ad-2747a08c6b1e&quot;,
+      &quot;name&quot;: &quot;Diana&quot;,
+      &quot;email&quot;: &quot;k2lvvrb8@example.com&quot;,
+      &quot;status&quot;: &quot;active&quot;,
+      &quot;createdAt&quot;: &quot;2027-12-09T15:04:03Z&quot;,
+      &quot;updatedAt&quot;: &quot;2024-10-25T09:29:09Z&quot;
+    },
+    {
+      &quot;id&quot;: &quot;9589c9cf-7a4a-4937-8076-4f15689317c4&quot;,
+      &quot;name&quot;: &quot;Diana&quot;,
+      &quot;email&quot;: &quot;gc03djsd@example.com&quot;,
+      &quot;status&quot;: &quot;pending&quot;,
+      &quot;createdAt&quot;: &quot;2021-02-03T20:29:33Z&quot;,
+      &quot;updatedAt&quot;: &quot;2028-11-16T11:49:33Z&quot;,
+      &quot;profile&quot;: {
+        &quot;age&quot;: 141,
+        &quot;phone&quot;: &quot;13883365354&quot;,
+        &quot;address&quot;: &quot;793 Main St, City&quot;
+      }
+    },
+    {
+      &quot;id&quot;: &quot;b86c8c7a-5138-42ab-9653-dd07ae914bb9&quot;,
+      &quot;name&quot;: &quot;Charlie&quot;,
+      &quot;email&quot;: &quot;yoj1mhqj@example.com&quot;,
+      &quot;status&quot;: &quot;active&quot;,
+      &quot;createdAt&quot;: &quot;2024-04-15T19:24:12Z&quot;,
+      &quot;updatedAt&quot;: &quot;2028-12-23T19:19:41Z&quot;,
+      &quot;profile&quot;: {
+        &quot;phone&quot;: &quot;13861962191&quot;,
+        &quot;address&quot;: &quot;35 Main St, City&quot;
+      }
+    },
+    {
+      &quot;id&quot;: &quot;295779d3-4b5b-4926-83bc-c1f6ec6993ad&quot;,
+      &quot;name&quot;: &quot;Charlie&quot;,
+      &quot;email&quot;: &quot;y6erv4sa@example.com&quot;,
+      &quot;status&quot;: &quot;active&quot;,
+      &quot;createdAt&quot;: &quot;2021-08-14T21:19:04Z&quot;,
+      &quot;updatedAt&quot;: &quot;2025-12-12T07:00:53Z&quot;
+    },
+    {
+      &quot;id&quot;: &quot;cf4c0468-10d4-4162-b922-ec1b416397f0&quot;,
+      &quot;name&quot;: &quot;Charlie&quot;,
+      &quot;email&quot;: &quot;52pfdwjq@example.com&quot;,
+      &quot;status&quot;: &quot;active&quot;,
+      &quot;createdAt&quot;: &quot;2022-09-08T06:05:04Z&quot;,
+      &quot;updatedAt&quot;: &quot;2026-12-03T14:41:48Z&quot;
+    }
+  ],
+  &quot;total&quot;: 694,
+  &quot;page&quot;: 581,
+  &quot;pageSize&quot;: 474
+}</pre>
+                 </div>
+        </div>
+      </div>
+    
+      <div class="response-item">
+        <div class="response-header" onclick="toggleResponse('/users-400')">
+          <span class="status-code status-error">400</span>
+          <span class="response-desc">请求参数错误</span>
+          <span class="toggle-arrow">▼</span>
+        </div>
+        <div class="response-content" id="resp-/users-400" style="display:none;">
+          <div class="schema-preview">
+                   <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name required">error</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">错误类型</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">message</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">错误信息</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">code</span>
+              <span class="prop-type">integer</span>
+              <span class="prop-desc">错误代码</span>
+              
+            </div>
+          
+        </div>
+      </div>
+                 </div>
+          <div class="example-box">
+                   <h6>响应示例</h6>
+                   <pre class="code-block">{
+  &quot;error&quot;: &quot;1jldoGJgW&quot;,
+  &quot;message&quot;: &quot;lzr5ZrRAs7MTg19HGE&quot;
+}</pre>
+                 </div>
+        </div>
+      </div>
+    
+          </div>
+
+          <div class="try-section">
+            <h4>请求示例</h4>
+            
+      <div class="example-tabs">
+        <button class="tab-btn active" onclick="switchTab(this, 'ep-get--users-json')">JSON</button>
+        <button class="tab-btn" onclick="switchTab(this, 'ep-get--users-curl')">cURL</button>
+      </div>
+      <div class="tab-content active" id="ep-get--users-json">
+        <pre class="code-block">// 无请求体</pre>
+      </div>
+      <div class="tab-content" id="ep-get--users-curl" style="display:none;">
+        <pre class="code-block">curl -X GET &#39;https://api.example.com/v1/users&#39; \
+  -G \
+  --data-urlencode &#39;page=value&#39; \
+  --data-urlencode &#39;pageSize=value&#39; \
+  --data-urlencode &#39;status=value&#39;</pre>
+      </div>
+    
+          </div>
+        </div>
+      </div>
+    
+      <div class="endpoint-card" id="ep-post--users">
+        <div class="endpoint-header">
+          <span class="method-badge method-post">POST</span>
+          <span class="endpoint-path">/users</span>
+          <button class="expand-btn" onclick="toggleEndpoint('ep-post--users')">展开</button>
+        </div>
+        <div class="endpoint-summary">创建用户</div>
+
+        <div class="endpoint-details" id="details-ep-post--users" style="display:none;">
+          <p class="endpoint-description">创建一个新用户</p>
+
+          
+
+          
+          <div class="request-body-section">
+            <h4>请求体 <span class="required-badge">必填</span></h4>
+            
+      <p>Content-Type: application/json</p>
+      <div class="schema-preview">
+        <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name required">name</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">email</span>
+              <span class="prop-type">string (email)</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">status</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">profile</span>
+              <span class="prop-type">object</span>
+              
+              <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name ">age</span>
+              <span class="prop-type">integer</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">phone</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">address</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+        </div>
+      </div>
+            </div>
+          
+        </div>
+      </div>
+      </div>
+    
+          </div>
+          
+
+          <div class="responses-section">
+            <h4>响应</h4>
+            
+      <div class="response-item">
+        <div class="response-header" onclick="toggleResponse('/users-201')">
+          <span class="status-code status-success">201</span>
+          <span class="response-desc">用户创建成功</span>
+          <span class="toggle-arrow">▼</span>
+        </div>
+        <div class="response-content" id="resp-/users-201" style="display:none;">
+          <div class="schema-preview">
+                   <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name required">id</span>
+              <span class="prop-type">string (uuid)</span>
+              <span class="prop-desc">用户唯一标识</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">name</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">用户名称</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">email</span>
+              <span class="prop-type">string (email)</span>
+              <span class="prop-desc">邮箱地址</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">status</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">用户状态</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">createdAt</span>
+              <span class="prop-type">string (date-time)</span>
+              <span class="prop-desc">创建时间</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">updatedAt</span>
+              <span class="prop-type">string (date-time)</span>
+              <span class="prop-desc">更新时间</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">profile</span>
+              <span class="prop-type">object</span>
+              <span class="prop-desc">用户资料</span>
+              <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name ">age</span>
+              <span class="prop-type">integer</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">phone</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">address</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+        </div>
+      </div>
+            </div>
+          
+        </div>
+      </div>
+                 </div>
+          <div class="example-box">
+                   <h6>响应示例</h6>
+                   <pre class="code-block">{
+  &quot;id&quot;: &quot;3129ffd7-e3f4-43d9-892c-8713ebee02d6&quot;,
+  &quot;name&quot;: &quot;Charlie&quot;,
+  &quot;email&quot;: &quot;nxtwp7te@example.com&quot;,
+  &quot;status&quot;: &quot;active&quot;,
+  &quot;createdAt&quot;: &quot;2028-07-09T19:43:14Z&quot;,
+  &quot;updatedAt&quot;: &quot;2023-07-18T17:22:49Z&quot;,
+  &quot;profile&quot;: {
+    &quot;age&quot;: 41
+  }
+}</pre>
+                 </div>
+        </div>
+      </div>
+    
+      <div class="response-item">
+        <div class="response-header" onclick="toggleResponse('/users-400')">
+          <span class="status-code status-error">400</span>
+          <span class="response-desc">请求参数错误</span>
+          <span class="toggle-arrow">▼</span>
+        </div>
+        <div class="response-content" id="resp-/users-400" style="display:none;">
+          <div class="schema-preview">
+                   <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name required">error</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">错误类型</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">message</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">错误信息</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">code</span>
+              <span class="prop-type">integer</span>
+              <span class="prop-desc">错误代码</span>
+              
+            </div>
+          
+        </div>
+      </div>
+                 </div>
+          <div class="example-box">
+                   <h6>响应示例</h6>
+                   <pre class="code-block">{
+  &quot;error&quot;: &quot;EnKMurSI2&quot;,
+  &quot;message&quot;: &quot;sZE9Fa&quot;,
+  &quot;code&quot;: 361
+}</pre>
+                 </div>
+        </div>
+      </div>
+    
+          </div>
+
+          <div class="try-section">
+            <h4>请求示例</h4>
+            
+      <div class="example-tabs">
+        <button class="tab-btn active" onclick="switchTab(this, 'ep-post--users-json')">JSON</button>
+        <button class="tab-btn" onclick="switchTab(this, 'ep-post--users-curl')">cURL</button>
+      </div>
+      <div class="tab-content active" id="ep-post--users-json">
+        <pre class="code-block">{
+  &quot;name&quot;: &quot;Alice&quot;,
+  &quot;email&quot;: &quot;pa140wpp@example.com&quot;,
+  &quot;profile&quot;: {
+    &quot;phone&quot;: &quot;13838948688&quot;
+  }
+}</pre>
+      </div>
+      <div class="tab-content" id="ep-post--users-curl" style="display:none;">
+        <pre class="code-block">curl -X POST &#39;https://api.example.com/v1/users&#39; \
+  -H &#39;Content-Type: application/json&#39; \
+  -d &#39;{&quot;name&quot;:&quot;Alice&quot;,&quot;email&quot;:&quot;pa140wpp@example.com&quot;,&quot;profile&quot;:{&quot;phone&quot;:&quot;13838948688&quot;}}&#39;</pre>
+      </div>
+    
+          </div>
+        </div>
+      </div>
+    
+      <div class="endpoint-card" id="ep-get--users-userId">
+        <div class="endpoint-header">
+          <span class="method-badge method-get">GET</span>
+          <span class="endpoint-path">/users/{userId}</span>
+          <button class="expand-btn" onclick="toggleEndpoint('ep-get--users-userId')">展开</button>
+        </div>
+        <div class="endpoint-summary">获取用户详情</div>
+
+        <div class="endpoint-details" id="details-ep-get--users-userId" style="display:none;">
+          <p class="endpoint-description">根据ID获取用户详细信息</p>
+
+          
+          <div class="parameters-section">
+            <h4>参数</h4>
+            
+      <div class="param-group">
+        <h5>路径参数</h5>
+        <table class="param-table">
+          <thead>
+            <tr>
+              <th>名称</th>
+              <th>类型</th>
+              <th>必填</th>
+              <th>描述</th>
+            </tr>
+          </thead>
+          <tbody>
+            
+              <tr>
+                <td class="param-name">userId</td>
+                <td class="param-type">string (uuid)</td>
+                <td><span class="required-badge">是</span></td>
+                <td>用户ID</td>
+              </tr>
+            
+          </tbody>
+        </table>
+      </div>
+    
+          </div>
+          
+
+          
+
+          <div class="responses-section">
+            <h4>响应</h4>
+            
+      <div class="response-item">
+        <div class="response-header" onclick="toggleResponse('/users/{userId}-200')">
+          <span class="status-code status-success">200</span>
+          <span class="response-desc">成功返回用户信息</span>
+          <span class="toggle-arrow">▼</span>
+        </div>
+        <div class="response-content" id="resp-/users/{userId}-200" style="display:none;">
+          <div class="schema-preview">
+                   <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name required">id</span>
+              <span class="prop-type">string (uuid)</span>
+              <span class="prop-desc">用户唯一标识</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">name</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">用户名称</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">email</span>
+              <span class="prop-type">string (email)</span>
+              <span class="prop-desc">邮箱地址</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">status</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">用户状态</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">createdAt</span>
+              <span class="prop-type">string (date-time)</span>
+              <span class="prop-desc">创建时间</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">updatedAt</span>
+              <span class="prop-type">string (date-time)</span>
+              <span class="prop-desc">更新时间</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">profile</span>
+              <span class="prop-type">object</span>
+              <span class="prop-desc">用户资料</span>
+              <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name ">age</span>
+              <span class="prop-type">integer</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">phone</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">address</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+        </div>
+      </div>
+            </div>
+          
+        </div>
+      </div>
+                 </div>
+          <div class="example-box">
+                   <h6>响应示例</h6>
+                   <pre class="code-block">{
+  &quot;id&quot;: &quot;2dc5d307-192b-463a-824b-6ef51352de94&quot;,
+  &quot;name&quot;: &quot;Diana&quot;,
+  &quot;email&quot;: &quot;t6odn17i@example.com&quot;,
+  &quot;status&quot;: &quot;pending&quot;,
+  &quot;createdAt&quot;: &quot;2029-05-04T04:03:33Z&quot;,
+  &quot;updatedAt&quot;: &quot;2023-01-13T17:46:12Z&quot;
+}</pre>
+                 </div>
+        </div>
+      </div>
+    
+      <div class="response-item">
+        <div class="response-header" onclick="toggleResponse('/users/{userId}-404')">
+          <span class="status-code status-error">404</span>
+          <span class="response-desc">用户不存在</span>
+          <span class="toggle-arrow">▼</span>
+        </div>
+        <div class="response-content" id="resp-/users/{userId}-404" style="display:none;">
+          <div class="schema-preview">
+                   <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name required">error</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">错误类型</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">message</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">错误信息</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">code</span>
+              <span class="prop-type">integer</span>
+              <span class="prop-desc">错误代码</span>
+              
+            </div>
+          
+        </div>
+      </div>
+                 </div>
+          <div class="example-box">
+                   <h6>响应示例</h6>
+                   <pre class="code-block">{
+  &quot;error&quot;: &quot;p5c7IAXglj9UCM&quot;,
+  &quot;message&quot;: &quot;gz7HXBkkyy7n&quot;,
+  &quot;code&quot;: 577
+}</pre>
+                 </div>
+        </div>
+      </div>
+    
+          </div>
+
+          <div class="try-section">
+            <h4>请求示例</h4>
+            
+      <div class="example-tabs">
+        <button class="tab-btn active" onclick="switchTab(this, 'ep-get--users-userId-json')">JSON</button>
+        <button class="tab-btn" onclick="switchTab(this, 'ep-get--users-userId-curl')">cURL</button>
+      </div>
+      <div class="tab-content active" id="ep-get--users-userId-json">
+        <pre class="code-block">// 无请求体</pre>
+      </div>
+      <div class="tab-content" id="ep-get--users-userId-curl" style="display:none;">
+        <pre class="code-block">curl -X GET &#39;https://api.example.com/v1/users/{userId}&#39;</pre>
+      </div>
+    
+          </div>
+        </div>
+      </div>
+    
+      <div class="endpoint-card" id="ep-put--users-userId">
+        <div class="endpoint-header">
+          <span class="method-badge method-put">PUT</span>
+          <span class="endpoint-path">/users/{userId}</span>
+          <button class="expand-btn" onclick="toggleEndpoint('ep-put--users-userId')">展开</button>
+        </div>
+        <div class="endpoint-summary">更新用户</div>
+
+        <div class="endpoint-details" id="details-ep-put--users-userId" style="display:none;">
+          <p class="endpoint-description">更新用户信息</p>
+
+          
+          <div class="parameters-section">
+            <h4>参数</h4>
+            
+      <div class="param-group">
+        <h5>路径参数</h5>
+        <table class="param-table">
+          <thead>
+            <tr>
+              <th>名称</th>
+              <th>类型</th>
+              <th>必填</th>
+              <th>描述</th>
+            </tr>
+          </thead>
+          <tbody>
+            
+              <tr>
+                <td class="param-name">userId</td>
+                <td class="param-type">string (uuid)</td>
+                <td><span class="required-badge">是</span></td>
+                <td>用户ID</td>
+              </tr>
+            
+          </tbody>
+        </table>
+      </div>
+    
+          </div>
+          
+
+          
+          <div class="request-body-section">
+            <h4>请求体 <span class="required-badge">必填</span></h4>
+            
+      <p>Content-Type: application/json</p>
+      <div class="schema-preview">
+        <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name ">name</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">email</span>
+              <span class="prop-type">string (email)</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">status</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">profile</span>
+              <span class="prop-type">object</span>
+              
+              <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name ">age</span>
+              <span class="prop-type">integer</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">phone</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">address</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+        </div>
+      </div>
+            </div>
+          
+        </div>
+      </div>
+      </div>
+    
+          </div>
+          
+
+          <div class="responses-section">
+            <h4>响应</h4>
+            
+      <div class="response-item">
+        <div class="response-header" onclick="toggleResponse('/users/{userId}-200')">
+          <span class="status-code status-success">200</span>
+          <span class="response-desc">用户更新成功</span>
+          <span class="toggle-arrow">▼</span>
+        </div>
+        <div class="response-content" id="resp-/users/{userId}-200" style="display:none;">
+          <div class="schema-preview">
+                   <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name required">id</span>
+              <span class="prop-type">string (uuid)</span>
+              <span class="prop-desc">用户唯一标识</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">name</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">用户名称</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">email</span>
+              <span class="prop-type">string (email)</span>
+              <span class="prop-desc">邮箱地址</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">status</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">用户状态</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">createdAt</span>
+              <span class="prop-type">string (date-time)</span>
+              <span class="prop-desc">创建时间</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">updatedAt</span>
+              <span class="prop-type">string (date-time)</span>
+              <span class="prop-desc">更新时间</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">profile</span>
+              <span class="prop-type">object</span>
+              <span class="prop-desc">用户资料</span>
+              <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name ">age</span>
+              <span class="prop-type">integer</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">phone</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">address</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+        </div>
+      </div>
+            </div>
+          
+        </div>
+      </div>
+                 </div>
+          <div class="example-box">
+                   <h6>响应示例</h6>
+                   <pre class="code-block">{
+  &quot;id&quot;: &quot;b211e22c-a75e-44f5-a156-0675ed54d7ee&quot;,
+  &quot;name&quot;: &quot;Bob&quot;,
+  &quot;email&quot;: &quot;qfxrazpz@example.com&quot;,
+  &quot;status&quot;: &quot;pending&quot;,
+  &quot;createdAt&quot;: &quot;2026-05-21T20:08:26Z&quot;,
+  &quot;updatedAt&quot;: &quot;2029-06-06T03:46:25Z&quot;
+}</pre>
+                 </div>
+        </div>
+      </div>
+    
+      <div class="response-item">
+        <div class="response-header" onclick="toggleResponse('/users/{userId}-400')">
+          <span class="status-code status-error">400</span>
+          <span class="response-desc">请求参数错误</span>
+          <span class="toggle-arrow">▼</span>
+        </div>
+        <div class="response-content" id="resp-/users/{userId}-400" style="display:none;">
+          <div class="schema-preview">
+                   <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name required">error</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">错误类型</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">message</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">错误信息</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">code</span>
+              <span class="prop-type">integer</span>
+              <span class="prop-desc">错误代码</span>
+              
+            </div>
+          
+        </div>
+      </div>
+                 </div>
+          <div class="example-box">
+                   <h6>响应示例</h6>
+                   <pre class="code-block">{
+  &quot;error&quot;: &quot;H0e7j3fuwwW5&quot;,
+  &quot;message&quot;: &quot;488k6k&quot;
+}</pre>
+                 </div>
+        </div>
+      </div>
+    
+      <div class="response-item">
+        <div class="response-header" onclick="toggleResponse('/users/{userId}-404')">
+          <span class="status-code status-error">404</span>
+          <span class="response-desc">用户不存在</span>
+          <span class="toggle-arrow">▼</span>
+        </div>
+        <div class="response-content" id="resp-/users/{userId}-404" style="display:none;">
+          <div class="schema-preview">
+                   <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name required">error</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">错误类型</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">message</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">错误信息</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">code</span>
+              <span class="prop-type">integer</span>
+              <span class="prop-desc">错误代码</span>
+              
+            </div>
+          
+        </div>
+      </div>
+                 </div>
+          <div class="example-box">
+                   <h6>响应示例</h6>
+                   <pre class="code-block">{
+  &quot;error&quot;: &quot;jOsvSFl&quot;,
+  &quot;message&quot;: &quot;sfMfBqsR6updM&quot;,
+  &quot;code&quot;: 34
+}</pre>
+                 </div>
+        </div>
+      </div>
+    
+          </div>
+
+          <div class="try-section">
+            <h4>请求示例</h4>
+            
+      <div class="example-tabs">
+        <button class="tab-btn active" onclick="switchTab(this, 'ep-put--users-userId-json')">JSON</button>
+        <button class="tab-btn" onclick="switchTab(this, 'ep-put--users-userId-curl')">cURL</button>
+      </div>
+      <div class="tab-content active" id="ep-put--users-userId-json">
+        <pre class="code-block">{
+  &quot;name&quot;: &quot;Charlie&quot;,
+  &quot;email&quot;: &quot;n58nukur@example.com&quot;,
+  &quot;status&quot;: &quot;active&quot;
+}</pre>
+      </div>
+      <div class="tab-content" id="ep-put--users-userId-curl" style="display:none;">
+        <pre class="code-block">curl -X PUT &#39;https://api.example.com/v1/users/{userId}&#39; \
+  -H &#39;Content-Type: application/json&#39; \
+  -d &#39;{&quot;name&quot;:&quot;Charlie&quot;,&quot;email&quot;:&quot;n58nukur@example.com&quot;,&quot;status&quot;:&quot;active&quot;}&#39;</pre>
+      </div>
+    
+          </div>
+        </div>
+      </div>
+    
+      <div class="endpoint-card" id="ep-delete--users-userId">
+        <div class="endpoint-header">
+          <span class="method-badge method-delete">DELETE</span>
+          <span class="endpoint-path">/users/{userId}</span>
+          <button class="expand-btn" onclick="toggleEndpoint('ep-delete--users-userId')">展开</button>
+        </div>
+        <div class="endpoint-summary">删除用户</div>
+
+        <div class="endpoint-details" id="details-ep-delete--users-userId" style="display:none;">
+          <p class="endpoint-description">删除指定用户</p>
+
+          
+          <div class="parameters-section">
+            <h4>参数</h4>
+            
+      <div class="param-group">
+        <h5>路径参数</h5>
+        <table class="param-table">
+          <thead>
+            <tr>
+              <th>名称</th>
+              <th>类型</th>
+              <th>必填</th>
+              <th>描述</th>
+            </tr>
+          </thead>
+          <tbody>
+            
+              <tr>
+                <td class="param-name">userId</td>
+                <td class="param-type">string (uuid)</td>
+                <td><span class="required-badge">是</span></td>
+                <td>用户ID</td>
+              </tr>
+            
+          </tbody>
+        </table>
+      </div>
+    
+          </div>
+          
+
+          
+
+          <div class="responses-section">
+            <h4>响应</h4>
+            
+      <div class="response-item">
+        <div class="response-header" onclick="toggleResponse('/users/{userId}-200')">
+          <span class="status-code status-success">200</span>
+          <span class="response-desc">用户删除成功</span>
+          <span class="toggle-arrow">▼</span>
+        </div>
+        <div class="response-content" id="resp-/users/{userId}-200" style="display:none;">
+          <div class="schema-preview">
+                   <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name ">success</span>
+              <span class="prop-type">boolean</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">id</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+        </div>
+      </div>
+                 </div>
+          <div class="example-box">
+                   <h6>响应示例</h6>
+                   <pre class="code-block">{
+  &quot;success&quot;: false,
+  &quot;id&quot;: &quot;id_K3ohZrIj&quot;
+}</pre>
+                 </div>
+        </div>
+      </div>
+    
+      <div class="response-item">
+        <div class="response-header" onclick="toggleResponse('/users/{userId}-404')">
+          <span class="status-code status-error">404</span>
+          <span class="response-desc">用户不存在</span>
+          <span class="toggle-arrow">▼</span>
+        </div>
+        <div class="response-content" id="resp-/users/{userId}-404" style="display:none;">
+          <div class="schema-preview">
+                   <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name required">error</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">错误类型</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">message</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">错误信息</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">code</span>
+              <span class="prop-type">integer</span>
+              <span class="prop-desc">错误代码</span>
+              
+            </div>
+          
+        </div>
+      </div>
+                 </div>
+          <div class="example-box">
+                   <h6>响应示例</h6>
+                   <pre class="code-block">{
+  &quot;error&quot;: &quot;urx0MqHL4XNVdinTGR&quot;,
+  &quot;message&quot;: &quot;nMaNzAl&quot;,
+  &quot;code&quot;: 925
+}</pre>
+                 </div>
+        </div>
+      </div>
+    
+          </div>
+
+          <div class="try-section">
+            <h4>请求示例</h4>
+            
+      <div class="example-tabs">
+        <button class="tab-btn active" onclick="switchTab(this, 'ep-delete--users-userId-json')">JSON</button>
+        <button class="tab-btn" onclick="switchTab(this, 'ep-delete--users-userId-curl')">cURL</button>
+      </div>
+      <div class="tab-content active" id="ep-delete--users-userId-json">
+        <pre class="code-block">// 无请求体</pre>
+      </div>
+      <div class="tab-content" id="ep-delete--users-userId-curl" style="display:none;">
+        <pre class="code-block">curl -X DELETE &#39;https://api.example.com/v1/users/{userId}&#39;</pre>
+      </div>
+    
+          </div>
+        </div>
+      </div>
+    
+      <div class="endpoint-card" id="ep-get--users-userId-orders">
+        <div class="endpoint-header">
+          <span class="method-badge method-get">GET</span>
+          <span class="endpoint-path">/users/{userId}/orders</span>
+          <button class="expand-btn" onclick="toggleEndpoint('ep-get--users-userId-orders')">展开</button>
+        </div>
+        <div class="endpoint-summary">获取用户订单列表</div>
+
+        <div class="endpoint-details" id="details-ep-get--users-userId-orders" style="display:none;">
+          <p class="endpoint-description">获取指定用户的所有订单</p>
+
+          
+          <div class="parameters-section">
+            <h4>参数</h4>
+            
+      <div class="param-group">
+        <h5>路径参数</h5>
+        <table class="param-table">
+          <thead>
+            <tr>
+              <th>名称</th>
+              <th>类型</th>
+              <th>必填</th>
+              <th>描述</th>
+            </tr>
+          </thead>
+          <tbody>
+            
+              <tr>
+                <td class="param-name">userId</td>
+                <td class="param-type">string</td>
+                <td><span class="required-badge">是</span></td>
+                <td>用户ID</td>
+              </tr>
+            
+          </tbody>
+        </table>
+      </div>
+    
+          </div>
+          
+
+          
+
+          <div class="responses-section">
+            <h4>响应</h4>
+            
+      <div class="response-item">
+        <div class="response-header" onclick="toggleResponse('/users/{userId}/orders-200')">
+          <span class="status-code status-success">200</span>
+          <span class="response-desc">成功返回订单列表</span>
+          <span class="toggle-arrow">▼</span>
+        </div>
+        <div class="response-content" id="resp-/users/{userId}/orders-200" style="display:none;">
+          <div class="schema-preview">
+                   <div class="schema-array">
+        <span class="schema-type">array</span>
+        <div class="schema-items">
+          <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name required">id</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">订单ID</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">userId</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">用户ID</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">status</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">订单状态</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">totalAmount</span>
+              <span class="prop-type">number</span>
+              <span class="prop-desc">订单总金额</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">items</span>
+              <span class="prop-type">object[]</span>
+              
+              <div class="schema-array">
+        <span class="schema-type">array</span>
+        <div class="schema-items">
+          <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name required">productId</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">productName</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">quantity</span>
+              <span class="prop-type">integer</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">price</span>
+              <span class="prop-type">number</span>
+              
+              
+            </div>
+          
+        </div>
+      </div>
+        </div>
+      </div>
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">createdAt</span>
+              <span class="prop-type">string (date-time)</span>
+              
+              
+            </div>
+          
+        </div>
+      </div>
+        </div>
+      </div>
+                 </div>
+          <div class="example-box">
+                   <h6>响应示例</h6>
+                   <pre class="code-block">[
+  {
+    &quot;id&quot;: &quot;id_n5veZYCf&quot;,
+    &quot;userId&quot;: &quot;id_eWeICoP5&quot;,
+    &quot;status&quot;: &quot;cancelled&quot;,
+    &quot;totalAmount&quot;: 846.08,
+    &quot;items&quot;: [
+      {
+        &quot;productId&quot;: &quot;id_E00ahZ01&quot;,
+        &quot;productName&quot;: &quot;Diana&quot;,
+        &quot;quantity&quot;: 445,
+        &quot;price&quot;: 952.46
+      },
+      {
+        &quot;productId&quot;: &quot;id_ft5u1yHG&quot;,
+        &quot;quantity&quot;: 137,
+        &quot;price&quot;: 716.3
+      },
+      {
+        &quot;productId&quot;: &quot;id_EH07juKz&quot;,
+        &quot;productName&quot;: &quot;Grace&quot;,
+        &quot;quantity&quot;: 727,
+        &quot;price&quot;: 62.34
+      },
+      {
+        &quot;productId&quot;: &quot;id_aFiNknfi&quot;,
+        &quot;quantity&quot;: 784,
+        &quot;price&quot;: 835.17
+      }
+    ],
+    &quot;createdAt&quot;: &quot;2021-02-19T19:35:02Z&quot;
+  }
+]</pre>
+                 </div>
+        </div>
+      </div>
+    
+          </div>
+
+          <div class="try-section">
+            <h4>请求示例</h4>
+            
+      <div class="example-tabs">
+        <button class="tab-btn active" onclick="switchTab(this, 'ep-get--users-userId-orders-json')">JSON</button>
+        <button class="tab-btn" onclick="switchTab(this, 'ep-get--users-userId-orders-curl')">cURL</button>
+      </div>
+      <div class="tab-content active" id="ep-get--users-userId-orders-json">
+        <pre class="code-block">// 无请求体</pre>
+      </div>
+      <div class="tab-content" id="ep-get--users-userId-orders-curl" style="display:none;">
+        <pre class="code-block">curl -X GET &#39;https://api.example.com/v1/users/{userId}/orders&#39;</pre>
+      </div>
+    
+          </div>
+        </div>
+      </div>
+    
+        </section>
+      
+        <section class="tag-section" id="tag-订单管理">
+          <h2>订单管理</h2>
+          <p class="tag-description">订单相关操作</p>
+          
+      <div class="endpoint-card" id="ep-get--users-userId-orders">
+        <div class="endpoint-header">
+          <span class="method-badge method-get">GET</span>
+          <span class="endpoint-path">/users/{userId}/orders</span>
+          <button class="expand-btn" onclick="toggleEndpoint('ep-get--users-userId-orders')">展开</button>
+        </div>
+        <div class="endpoint-summary">获取用户订单列表</div>
+
+        <div class="endpoint-details" id="details-ep-get--users-userId-orders" style="display:none;">
+          <p class="endpoint-description">获取指定用户的所有订单</p>
+
+          
+          <div class="parameters-section">
+            <h4>参数</h4>
+            
+      <div class="param-group">
+        <h5>路径参数</h5>
+        <table class="param-table">
+          <thead>
+            <tr>
+              <th>名称</th>
+              <th>类型</th>
+              <th>必填</th>
+              <th>描述</th>
+            </tr>
+          </thead>
+          <tbody>
+            
+              <tr>
+                <td class="param-name">userId</td>
+                <td class="param-type">string</td>
+                <td><span class="required-badge">是</span></td>
+                <td>用户ID</td>
+              </tr>
+            
+          </tbody>
+        </table>
+      </div>
+    
+          </div>
+          
+
+          
+
+          <div class="responses-section">
+            <h4>响应</h4>
+            
+      <div class="response-item">
+        <div class="response-header" onclick="toggleResponse('/users/{userId}/orders-200')">
+          <span class="status-code status-success">200</span>
+          <span class="response-desc">成功返回订单列表</span>
+          <span class="toggle-arrow">▼</span>
+        </div>
+        <div class="response-content" id="resp-/users/{userId}/orders-200" style="display:none;">
+          <div class="schema-preview">
+                   <div class="schema-array">
+        <span class="schema-type">array</span>
+        <div class="schema-items">
+          <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name required">id</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">订单ID</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">userId</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">用户ID</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">status</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">订单状态</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">totalAmount</span>
+              <span class="prop-type">number</span>
+              <span class="prop-desc">订单总金额</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">items</span>
+              <span class="prop-type">object[]</span>
+              
+              <div class="schema-array">
+        <span class="schema-type">array</span>
+        <div class="schema-items">
+          <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name required">productId</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">productName</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">quantity</span>
+              <span class="prop-type">integer</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">price</span>
+              <span class="prop-type">number</span>
+              
+              
+            </div>
+          
+        </div>
+      </div>
+        </div>
+      </div>
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">createdAt</span>
+              <span class="prop-type">string (date-time)</span>
+              
+              
+            </div>
+          
+        </div>
+      </div>
+        </div>
+      </div>
+                 </div>
+          <div class="example-box">
+                   <h6>响应示例</h6>
+                   <pre class="code-block">[
+  {
+    &quot;id&quot;: &quot;id_HyOyhNKP&quot;,
+    &quot;userId&quot;: &quot;id_JGA2MZ6s&quot;,
+    &quot;status&quot;: &quot;paid&quot;,
+    &quot;totalAmount&quot;: 211.57,
+    &quot;createdAt&quot;: &quot;2022-02-03T23:58:00Z&quot;
+  }
+]</pre>
+                 </div>
+        </div>
+      </div>
+    
+          </div>
+
+          <div class="try-section">
+            <h4>请求示例</h4>
+            
+      <div class="example-tabs">
+        <button class="tab-btn active" onclick="switchTab(this, 'ep-get--users-userId-orders-json')">JSON</button>
+        <button class="tab-btn" onclick="switchTab(this, 'ep-get--users-userId-orders-curl')">cURL</button>
+      </div>
+      <div class="tab-content active" id="ep-get--users-userId-orders-json">
+        <pre class="code-block">// 无请求体</pre>
+      </div>
+      <div class="tab-content" id="ep-get--users-userId-orders-curl" style="display:none;">
+        <pre class="code-block">curl -X GET &#39;https://api.example.com/v1/users/{userId}/orders&#39;</pre>
+      </div>
+    
+          </div>
+        </div>
+      </div>
+    
+      <div class="endpoint-card" id="ep-post--orders">
+        <div class="endpoint-header">
+          <span class="method-badge method-post">POST</span>
+          <span class="endpoint-path">/orders</span>
+          <button class="expand-btn" onclick="toggleEndpoint('ep-post--orders')">展开</button>
+        </div>
+        <div class="endpoint-summary">创建订单</div>
+
+        <div class="endpoint-details" id="details-ep-post--orders" style="display:none;">
+          <p class="endpoint-description">创建一个新订单</p>
+
+          
+
+          
+          <div class="request-body-section">
+            <h4>请求体 <span class="required-badge">必填</span></h4>
+            
+      <p>Content-Type: application/json</p>
+      <div class="schema-preview">
+        <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name required">userId</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">items</span>
+              <span class="prop-type">object[]</span>
+              
+              <div class="schema-array">
+        <span class="schema-type">array</span>
+        <div class="schema-items">
+          <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name required">productId</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">quantity</span>
+              <span class="prop-type">integer</span>
+              
+              
+            </div>
+          
+        </div>
+      </div>
+        </div>
+      </div>
+            </div>
+          
+        </div>
+      </div>
+      </div>
+    
+          </div>
+          
+
+          <div class="responses-section">
+            <h4>响应</h4>
+            
+      <div class="response-item">
+        <div class="response-header" onclick="toggleResponse('/orders-201')">
+          <span class="status-code status-success">201</span>
+          <span class="response-desc">订单创建成功</span>
+          <span class="toggle-arrow">▼</span>
+        </div>
+        <div class="response-content" id="resp-/orders-201" style="display:none;">
+          <div class="schema-preview">
+                   <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name required">id</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">订单ID</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">userId</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">用户ID</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">status</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">订单状态</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">totalAmount</span>
+              <span class="prop-type">number</span>
+              <span class="prop-desc">订单总金额</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">items</span>
+              <span class="prop-type">object[]</span>
+              
+              <div class="schema-array">
+        <span class="schema-type">array</span>
+        <div class="schema-items">
+          <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name required">productId</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">productName</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">quantity</span>
+              <span class="prop-type">integer</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">price</span>
+              <span class="prop-type">number</span>
+              
+              
+            </div>
+          
+        </div>
+      </div>
+        </div>
+      </div>
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">createdAt</span>
+              <span class="prop-type">string (date-time)</span>
+              
+              
+            </div>
+          
+        </div>
+      </div>
+                 </div>
+          <div class="example-box">
+                   <h6>响应示例</h6>
+                   <pre class="code-block">{
+  &quot;id&quot;: &quot;id_5cN77QNN&quot;,
+  &quot;userId&quot;: &quot;id_swF5J97O&quot;,
+  &quot;status&quot;: &quot;shipped&quot;,
+  &quot;totalAmount&quot;: 836.24,
+  &quot;items&quot;: [
+    {
+      &quot;productId&quot;: &quot;id_7iqTyvLl&quot;,
+      &quot;productName&quot;: &quot;Henry&quot;,
+      &quot;quantity&quot;: 951,
+      &quot;price&quot;: 12.58
+    },
+    {
+      &quot;productId&quot;: &quot;id_ogAZdWlo&quot;,
+      &quot;productName&quot;: &quot;Frank&quot;,
+      &quot;quantity&quot;: 51,
+      &quot;price&quot;: 978.99
+    }
+  ],
+  &quot;createdAt&quot;: &quot;2028-11-19T21:15:56Z&quot;
+}</pre>
+                 </div>
+        </div>
+      </div>
+    
+          </div>
+
+          <div class="try-section">
+            <h4>请求示例</h4>
+            
+      <div class="example-tabs">
+        <button class="tab-btn active" onclick="switchTab(this, 'ep-post--orders-json')">JSON</button>
+        <button class="tab-btn" onclick="switchTab(this, 'ep-post--orders-curl')">cURL</button>
+      </div>
+      <div class="tab-content active" id="ep-post--orders-json">
+        <pre class="code-block">{
+  &quot;userId&quot;: &quot;id_gtk6Ga49&quot;,
+  &quot;items&quot;: [
+    {
+      &quot;productId&quot;: &quot;id_Ajv4BPWo&quot;,
+      &quot;quantity&quot;: 335
+    },
+    {
+      &quot;productId&quot;: &quot;id_C8Uwft37&quot;,
+      &quot;quantity&quot;: 471
+    },
+    {
+      &quot;productId&quot;: &quot;id_EbMHRlEz&quot;,
+      &quot;quantity&quot;: 586
+    },
+    {
+      &quot;productId&quot;: &quot;id_TIoRIHYZ&quot;,
+      &quot;quantity&quot;: 930
+    },
+    {
+      &quot;productId&quot;: &quot;id_DYYg3MgE&quot;,
+      &quot;quantity&quot;: 753
+    }
+  ]
+}</pre>
+      </div>
+      <div class="tab-content" id="ep-post--orders-curl" style="display:none;">
+        <pre class="code-block">curl -X POST &#39;https://api.example.com/v1/orders&#39; \
+  -H &#39;Content-Type: application/json&#39; \
+  -d &#39;{&quot;userId&quot;:&quot;id_gtk6Ga49&quot;,&quot;items&quot;:[{&quot;productId&quot;:&quot;id_Ajv4BPWo&quot;,&quot;quantity&quot;:335},{&quot;productId&quot;:&quot;id_C8Uwft37&quot;,&quot;quantity&quot;:471},{&quot;productId&quot;:&quot;id_EbMHRlEz&quot;,&quot;quantity&quot;:586},{&quot;productId&quot;:&quot;id_TIoRIHYZ&quot;,&quot;quantity&quot;:930},{&quot;productId&quot;:&quot;id_DYYg3MgE&quot;,&quot;quantity&quot;:753}]}&#39;</pre>
+      </div>
+    
+          </div>
+        </div>
+      </div>
+    
+        </section>
+      
+
+      
+      <section class="schemas-section">
+        <h2>数据模型</h2>
+        
+      <div class="schema-card" id="schema-User">
+        <h3 class="schema-name">User</h3>
+        <div class="schema-content">
+          <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name required">id</span>
+              <span class="prop-type">string (uuid)</span>
+              <span class="prop-desc">用户唯一标识</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">name</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">用户名称</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">email</span>
+              <span class="prop-type">string (email)</span>
+              <span class="prop-desc">邮箱地址</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">status</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">用户状态</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">createdAt</span>
+              <span class="prop-type">string (date-time)</span>
+              <span class="prop-desc">创建时间</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">updatedAt</span>
+              <span class="prop-type">string (date-time)</span>
+              <span class="prop-desc">更新时间</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">profile</span>
+              <span class="prop-type">object</span>
+              <span class="prop-desc">用户资料</span>
+              <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name ">age</span>
+              <span class="prop-type">integer</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">phone</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">address</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+        </div>
+      </div>
+            </div>
+          
+        </div>
+      </div>
+        </div>
+      </div>
+    
+      <div class="schema-card" id="schema-CreateUserRequest">
+        <h3 class="schema-name">CreateUserRequest</h3>
+        <div class="schema-content">
+          <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name required">name</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">email</span>
+              <span class="prop-type">string (email)</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">status</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">profile</span>
+              <span class="prop-type">object</span>
+              
+              <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name ">age</span>
+              <span class="prop-type">integer</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">phone</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">address</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+        </div>
+      </div>
+            </div>
+          
+        </div>
+      </div>
+        </div>
+      </div>
+    
+      <div class="schema-card" id="schema-UpdateUserRequest">
+        <h3 class="schema-name">UpdateUserRequest</h3>
+        <div class="schema-content">
+          <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name ">name</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">email</span>
+              <span class="prop-type">string (email)</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">status</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">profile</span>
+              <span class="prop-type">object</span>
+              
+              <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name ">age</span>
+              <span class="prop-type">integer</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">phone</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">address</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+        </div>
+      </div>
+            </div>
+          
+        </div>
+      </div>
+        </div>
+      </div>
+    
+      <div class="schema-card" id="schema-Order">
+        <h3 class="schema-name">Order</h3>
+        <div class="schema-content">
+          <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name required">id</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">订单ID</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">userId</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">用户ID</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">status</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">订单状态</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">totalAmount</span>
+              <span class="prop-type">number</span>
+              <span class="prop-desc">订单总金额</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">items</span>
+              <span class="prop-type">object[]</span>
+              
+              <div class="schema-array">
+        <span class="schema-type">array</span>
+        <div class="schema-items">
+          <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name required">productId</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">productName</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">quantity</span>
+              <span class="prop-type">integer</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">price</span>
+              <span class="prop-type">number</span>
+              
+              
+            </div>
+          
+        </div>
+      </div>
+        </div>
+      </div>
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">createdAt</span>
+              <span class="prop-type">string (date-time)</span>
+              
+              
+            </div>
+          
+        </div>
+      </div>
+        </div>
+      </div>
+    
+      <div class="schema-card" id="schema-CreateOrderRequest">
+        <h3 class="schema-name">CreateOrderRequest</h3>
+        <div class="schema-content">
+          <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name required">userId</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">items</span>
+              <span class="prop-type">object[]</span>
+              
+              <div class="schema-array">
+        <span class="schema-type">array</span>
+        <div class="schema-items">
+          <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name required">productId</span>
+              <span class="prop-type">string</span>
+              
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">quantity</span>
+              <span class="prop-type">integer</span>
+              
+              
+            </div>
+          
+        </div>
+      </div>
+        </div>
+      </div>
+            </div>
+          
+        </div>
+      </div>
+        </div>
+      </div>
+    
+      <div class="schema-card" id="schema-Error">
+        <h3 class="schema-name">Error</h3>
+        <div class="schema-content">
+          <div class="schema-object">
+        <span class="schema-type">{object}</span>
+        <div class="schema-properties">
+          
+            <div class="schema-property">
+              <span class="prop-name required">error</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">错误类型</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name required">message</span>
+              <span class="prop-type">string</span>
+              <span class="prop-desc">错误信息</span>
+              
+            </div>
+          
+            <div class="schema-property">
+              <span class="prop-name ">code</span>
+              <span class="prop-type">integer</span>
+              <span class="prop-desc">错误代码</span>
+              
+            </div>
+          
+        </div>
+      </div>
+        </div>
+      </div>
+    
+      </section>
+      
+    </main>
+  </div>
+
+  <script>
+    
+      function toggleTag(tagName) {
+        const list = document.getElementById('list-' + tagName);
+        const header = list?.previousElementSibling;
+        const arrow = header?.querySelector('.tag-arrow');
+        if (list) {
+          if (list.style.display === 'none') {
+            list.style.display = 'block';
+            if (arrow) arrow.style.transform = 'rotate(0deg)';
+          } else {
+            list.style.display = 'none';
+            if (arrow) arrow.style.transform = 'rotate(-90deg)';
+          }
+        }
+      }
+
+      function toggleEndpoint(id) {
+        const details = document.getElementById('details-' + id);
+        const btn = document.querySelector('#' + id + ' .expand-btn');
+        if (details) {
+          if (details.style.display === 'none') {
+            details.style.display = 'block';
+            if (btn) btn.textContent = '收起';
+          } else {
+            details.style.display = 'none';
+            if (btn) btn.textContent = '展开';
+          }
+        }
+      }
+
+      function toggleResponse(key) {
+        const content = document.getElementById('resp-' + key);
+        if (content) {
+          content.style.display = content.style.display === 'none' ? 'block' : 'none';
+        }
+      }
+
+      function scrollToEndpoint(id) {
+        const el = document.getElementById(id);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          const details = document.getElementById('details-' + id);
+          if (details) {
+            details.style.display = 'block';
+            const btn = document.querySelector('#' + id + ' .expand-btn');
+            if (btn) btn.textContent = '收起';
+          }
+        }
+      }
+
+      function switchTab(btn, targetId) {
+        const tabs = btn.parentElement.querySelectorAll('.tab-btn');
+        tabs.forEach(t => t.classList.remove('active'));
+        btn.classList.add('active');
+
+        const parent = btn.closest('.try-section');
+        const contents = parent.querySelectorAll('.tab-content');
+        contents.forEach(c => c.style.display = 'none');
+
+        const target = document.getElementById(targetId);
+        if (target) target.style.display = 'block';
+      }
+    
+  </script>
+</body>
+</html>

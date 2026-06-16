@@ -1,0 +1,20 @@
+{
+  "name": "api-contract-platform",
+  "version": "1.0.0",
+  "description": "API 文档与契约测试平台核心 - OpenAPI解析、Mock引擎、契约校验、文档生成、兼容检查",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test dist/tests/",
+    "demo": "node dist/demo.js"
+  },
+  "keywords": ["openapi", "mock", "contract-testing", "api-docs"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {}
+}
